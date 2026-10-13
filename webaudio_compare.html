@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh"><meta charset="utf-8"><title>双耳渲染对比</title>
+<style>body{font:18px system-ui;max-width:780px;margin:60px auto;padding:24px;background:#101820;color:#e6eef5}button{padding:14px 24px;font:inherit;cursor:pointer}audio{width:100%}p{line-height:1.7}section{margin:30px 0}#status{color:#8ddac5}</style>
+<h1>Web Audio / Python 双耳对比</h1>
+<p>相同 5 秒噪声、相同左前方 → 正前方 → 右前方直线轨迹。无房间混响。两版整体 RMS 匹配至 −24 dBFS，左右耳共用增益。</p>
+<button id="render">生成浏览器 HRTF 音频</button><p id="status">待生成</p>
+<section><h2>浏览器内置 HRTF</h2><audio id="web" controls></audio></section>
+<section><h2>Python + ARI HRTF（改进版）</h2><audio id="python" controls></audio></section>
+<p>请戴耳机依次试听。不同 HRTF 会改变音色及方向感；此比较不能单独判断哪种算法更准确。</p>
+<script>
+document.querySelector('#render').onclick=async()=>{
+ const status=document.querySelector('#status');
+ try {
+  status.textContent='正在使用 OfflineAudioContext + PannerNode(HRTF) 渲染…';
+  const fs=48000, duration=5, ctx=new OfflineAudioContext(2,Math.round(5.1*fs),fs);
+  const data=new Float32Array(await (await fetch('outputs/comparison_input.f32')).arrayBuffer());
+  const buffer=ctx.createBuffer(1,data.length,fs);buffer.copyToChannel(data,0);
+  const source=ctx.createBufferSource();source.buffer=buffer;
+  const p=ctx.createPanner();p.panningModel='HRTF';p.distanceModel='inverse';
+  p.refDistance=1;p.rolloffFactor=1;p.maxDistance=10000;
+  // Python relative (front,left,up) maps to WebAudio (-left,up,-front).
+  ctx.listener.positionX.value=0;ctx.listener.positionY.value=0;ctx.listener.positionZ.value=0;
+  ctx.listener.forwardX.value=0;ctx.listener.forwardY.value=0;ctx.listener.forwardZ.value=-1;
+  ctx.listener.upX.value=0;ctx.listener.upY.value=1;ctx.listener.upZ.value=0;
+  p.positionX.setValueAtTime(-1.5,0);p.positionX.linearRampToValueAtTime(1.5,(data.length-1)/fs);
+  p.positionY.value=0;p.positionZ.value=-2;
+  source.connect(p).connect(ctx.destination);source.start(0);
+  const rendered=await ctx.startRendering();
+  const interleaved=new Float32Array(rendered.length*2);
+  const l=rendered.getChannelData(0),r=rendered.getChannelData(1);
+  for(let i=0;i<rendered.length;i++){interleaved[2*i]=l[i];interleaved[2*i+1]=r[i];}
+  const response=await fetch('/save-webaudio',{method:'POST',body:interleaved.buffer});
+  if(!response.ok)throw Error(await response.text());
+  document.querySelector('#web').src='outputs/webaudio_left_to_right_matched.wav';
+  document.querySelector('#python').src='outputs/python_left_to_right_matched.wav';
+  status.textContent='已生成并保存两段音量匹配的 WAV。浏览器：'+navigator.userAgent;
+ }catch(e){status.textContent='生成失败：'+e.message;}
+};
+document.querySelectorAll('audio').forEach(a=>a.onplay=()=>document.querySelectorAll('audio').forEach(b=>{if(b!==a)b.pause();}));
+</script></html>

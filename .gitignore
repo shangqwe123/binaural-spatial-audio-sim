@@ -1,0 +1,26 @@
+# Python environments and caches
+.venv/
+venv/
+.deps/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Downloaded HRTF data and local test audio
+data/*.sofa
+data/real_sample/*.wav
+data/real_sample/*.flac
+data/real_sample/*.ogg
+
+# Generated renders, manifests, and intermediate audio
+outputs/
+generated/
+dataset_out/
+dataset_demo/
+*.download
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
