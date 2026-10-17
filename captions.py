@@ -3,10 +3,8 @@
 These are deliberately plain; rewrite them with an LLM later for variety and
 keep the structured labels in the manifest as the ground truth.
 """
-ROOM_ZH = {'small': '在一个小房间里', 'medium': '在一个中等大小的房间里',
-           'large': '在一个大厅里', 'open': '在空旷的户外'}
-ROOM_EN = {'small': 'In a small room', 'medium': 'In a medium-sized room',
-           'large': 'In a large hall', 'open': 'Outdoors in an open space'}
+ROOM_ZH = {'room': '在一个房间里', 'hall': '在一个大厅里', 'open': '在空旷的户外'}
+ROOM_EN = {'room': 'In a room', 'hall': 'In a large hall', 'open': 'Outdoors in an open space'}
 SECTOR_ZH = {'front': '正前方', 'front_left': '左前方', 'left': '左侧', 'back_left': '左后方',
              'back': '正后方', 'back_right': '右后方', 'right': '右侧', 'front_right': '右前方'}
 SECTOR_EN = {'front': 'the front', 'front_left': 'the front left', 'left': 'the left',

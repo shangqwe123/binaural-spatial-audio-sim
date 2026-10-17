@@ -5,7 +5,7 @@ type, text, group). Output: <output-dir>/<split>/<id>.wav, manifest.jsonl with
 structured labels and template captions, errors.json.
 
   python generate_dataset.py --sources sources/speech.jsonl sources/sfx.jsonl \
-      --output-dir generated --variants 2 --workers 16
+      --output-dir generated --variants 8 --workers 16 [--ratios ratios.json]
 """
 import argparse
 import hashlib
@@ -24,7 +24,13 @@ from scene import (ROOMS, SECTORS, Hrirs, distance_class, path_fraction, place_l
                    render_scene, sample_motion, sample_room, sample_timing, sector_of, wrap_deg)
 
 HRIRS = None
-MOTION_TYPES = ['static', 'arc', 'line', 'approach', 'recede']
+# Shares of each attribute over the dataset; override with --ratios file.json.
+DEFAULT_RATIOS = {
+    'scene': {'room': 0.4, 'hall': 0.3, 'open': 0.3},
+    'motion': {'static': 0.4, 'arc': 0.15, 'line': 0.15, 'approach': 0.15, 'recede': 0.15},
+    'distance': {'near': 0.5, 'far': 0.5},  # static/arc/line only
+    'sector': {s: 1/8 for s in SECTORS},
+}
 
 
 def stable_split(group):
@@ -98,45 +104,44 @@ def describe(traj, listener, n, fs):
     return spatial
 
 
-def plan_variants(rng, n):
-    """Spread one source's n variants evenly over sectors, rooms, motions, distances.
+def proportional(rng, ratios, count):
+    """count values whose shares follow ratios (systematic sampling, shuffled).
 
-    Each attribute cycles through shuffled copies of all its values, so with
-    n=8 every sector appears once, every room twice and every motion at least
-    once. Small rooms hold neither far sources nor approach/recede, so those
-    slots swap rooms with unconstrained ones.
+    One random offset per call: every value gets floor or ceil of count*share,
+    so each clip is close to the ratios and the whole dataset converges on them.
     """
-    def tiled(values, count=n):
-        out = []
-        while len(out) < count:
-            out += [str(v) for v in rng.permutation(values)]
-        return out[:count]
-    sectors, motions, rooms = tiled(SECTORS), tiled(MOTION_TYPES), tiled(list(ROOMS))
+    if count <= 0:
+        return []
+    names = list(ratios)
+    cum = np.cumsum([ratios[k] for k in names])/sum(ratios.values())
+    points = (rng.random()+np.arange(count))/count
+    picked = [names[min(int(i), len(names)-1)] for i in np.searchsorted(cum, points, side='right')]
+    return [str(v) for v in rng.permutation(picked)]
+
+
+def plan_variants(rng, n, ratios=DEFAULT_RATIOS):
+    """Spatial attributes for one source's n parallel variants, following ratios.
+
+    Scene, motion and sector are drawn independently; near/far applies only to
+    static/arc/line (approach/recede span both).
+    """
+    rooms = proportional(rng, ratios['scene'], n)
+    motions = proportional(rng, ratios['motion'], n)
+    sectors = proportional(rng, ratios['sector'], n)
     radial = [m in ('approach', 'recede') for m in motions]
-    # Approach/recede already span near and far; balance near/far over the rest.
-    fixed = iter(tiled(['near', 'far'], n-sum(radial)))
-    dists = [None if r else next(fixed) for r in radial]
-    # Small rooms go to near, non-radial slots first; any left over become medium.
-    fits_small = [int(i) for i in rng.permutation([i for i in range(n) if dists[i] == 'near'])]
-    others = [i for i in range(n) if i not in fits_small]
-    smalls = rooms.count('small')
-    rest = [r for r in rooms if r != 'small'] + ['medium']*max(0, smalls-len(fits_small))
-    rooms = [None]*n
-    for i in fits_small[:smalls]:
-        rooms[i] = 'small'
-    for i, room in zip(fits_small[smalls:]+others, rest):
-        rooms[i] = room
+    fixed = iter(proportional(rng, ratios['distance'], n-sum(radial)))
     return [{'room': rooms[i], 'sector': sectors[i],
              'motion': 'radial' if radial[i] else motions[i],
              'approach': motions[i] == 'approach' if radial[i] else None,
-             'distance': None if radial[i] else dists[i]} for i in range(n)]
+             'distance': None if radial[i] else next(fixed)} for i in range(n)]
 
 
 def sample_scene(rng, source, plan):
     """Room, trajectory and listener for one planned variant.
 
-    If the planned distance cannot fit (e.g. a far arc in a medium room), the
-    distance is released after 100 tries; labels always describe what was rendered.
+    Each attempt draws a new room size, so far sources end up in the larger
+    rooms. If nothing fits after 100 tries the distance is released; labels
+    always describe what was rendered.
     """
     for attempt in range(200):
         room = sample_room(rng, plan['room'])
@@ -165,7 +170,8 @@ def process(job):
             raise ValueError(f'only {active:.2f}s active audio')
         rows = []
         # The plan depends only on the source, so --resume reproduces it.
-        plans = plan_variants(np.random.default_rng([a['seed'], int(base, 16)]), a['variants'])
+        plans = plan_variants(np.random.default_rng([a['seed'], int(base, 16)]), a['variants'],
+                              a['ratios'])
         for variant in job['variants']:
             key = f'{base}_v{variant:02d}'
             seed = [a['seed'], int(base, 16), variant]
@@ -187,6 +193,7 @@ def process(job):
             rows.append({
                 'id': key, 'audio': f'{split}/{key}.wav', 'split': split,
                 'set_id': base, 'variant': variant,  # all variants share the same source audio
+                'plan': plans[variant],  # requested attributes; labels below are what was rendered
                 'sample_rate': a['out_sr'], 'channels': ['left', 'right'],
                 'duration_s': round(len(audio)/a['out_sr'], 3),
                 'dry_duration_s': round(len(signal)/fs, 3),  # rest is propagation + reverb tail
@@ -212,8 +219,9 @@ def main():
     p.add_argument('--output-dir', type=Path, default=Path('generated'))
     p.add_argument('--sofa', type=Path, default=Path(__file__).parent/'data/hrtf_nh2.sofa')
     p.add_argument('--variants', type=int, default=8,
-                   help='Parallel spatial versions per source clip, spread evenly over '
-                        'sectors, rooms, motions and distances')
+                   help='Parallel spatial versions per source clip (same audio, different scenes)')
+    p.add_argument('--ratios', type=Path, default=None,
+                   help='JSON overriding DEFAULT_RATIOS, e.g. {"scene": {"room": 0.5, "hall": 0.2, "open": 0.3}}')
     p.add_argument('--seed', type=int, default=20261017)
     p.add_argument('--max-duration', type=float, default=15.0, help='Trim sources to this many seconds')
     p.add_argument('--min-active', type=float, default=1.0, help='Minimum non-silent seconds')
@@ -228,6 +236,15 @@ def main():
         p.error('variants, max-duration and out-sr must be positive')
     if not a.sofa.is_file():
         p.error(f'SOFA file not found: {a.sofa}')
+    ratios = json.loads(json.dumps(DEFAULT_RATIOS))
+    if a.ratios:
+        for group, shares in json.loads(a.ratios.read_text(encoding='utf-8')).items():
+            if group not in ratios or set(shares) - set(ratios[group]):
+                p.error(f'unknown ratio group/value in {a.ratios}: {group} {list(shares)}')
+            if any(v < 0 for v in shares.values()) or sum(shares.values()) <= 0:
+                p.error(f'ratios for {group} must be non-negative with a positive sum')
+            ratios[group] = {k: float(shares.get(k, 0)) for k in ratios[group]}
+    a.ratios = {g: {k: v for k, v in shares.items() if v > 0} for g, shares in ratios.items()}
     sources = []
     for manifest in a.sources:
         for line in manifest.read_text(encoding='utf-8').splitlines():
@@ -238,6 +255,7 @@ def main():
                 sources.append(row)
     sources = sources[:a.limit]
     a.output_dir.mkdir(parents=True, exist_ok=True)
+    (a.output_dir/'ratios.json').write_text(json.dumps(a.ratios, indent=2), encoding='utf-8')
     manifest_path = a.output_dir/'manifest.jsonl'
     done = set()
     if a.resume and manifest_path.exists():

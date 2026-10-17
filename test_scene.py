@@ -23,7 +23,7 @@ class SceneTests(unittest.TestCase):
         seen = set()
         for i in range(600):
             rng = np.random.default_rng([3, i])
-            kind = list(ROOMS)[i % 4]
+            kind = list(ROOMS)[i % len(ROOMS)]
             room = sample_room(rng, kind)
             traj = sample_motion(rng, kind)
             seen.add((kind, traj['kind']))
@@ -51,8 +51,8 @@ class SceneTests(unittest.TestCase):
             if listener is not None and room['dims'] is not None:
                 pts = positions(traj, listener, np.linspace(0, 1, 64))
                 self.assertTrue(np.all((pts > 0) & (pts < room['dims'])))
-        self.assertNotIn(('small', 'radial'), seen)  # small rooms have no far distance
-        self.assertIn(('large', 'radial'), seen)
+        self.assertIn(('room', 'radial'), seen)
+        self.assertIn(('hall', 'radial'), seen)
 
     def test_image_sources(self):
         room = {'dims': np.array([4., 3., 2.5]), 'beta': 0.8}
@@ -99,27 +99,39 @@ class SceneTests(unittest.TestCase):
 
 
 class PlanTests(unittest.TestCase):
-    def test_parallel_plan_covers_every_type(self):
-        from generate_dataset import plan_variants
-        for seed in range(50):
+    def test_plan_follows_ratios(self):
+        from collections import Counter
+        from generate_dataset import DEFAULT_RATIOS, plan_variants
+        counts = {k: Counter() for k in ('room', 'motion', 'distance', 'sector')}
+        for seed in range(3000):
             plans = plan_variants(np.random.default_rng(seed), 8)
-            self.assertEqual({p['sector'] for p in plans}, set(SECTORS))
-            self.assertEqual(sorted(p['room'] for p in plans).count('small'), 2)
-            kinds = {p['motion'] if p['motion'] != 'radial' else ('approach' if p['approach'] else 'recede')
-                     for p in plans}
-            self.assertEqual(kinds, {'static', 'arc', 'line', 'approach', 'recede'})
-            for p in plans:  # small rooms: near only, no approach/recede
-                if p['room'] == 'small':
-                    self.assertEqual(p['distance'], 'near')
-                    self.assertNotEqual(p['motion'], 'radial')
+            self.assertEqual({p['sector'] for p in plans}, set(SECTORS))  # 1/8 each, n=8
+            for p in plans:
+                counts['room'][p['room']] += 1
+                counts['sector'][p['sector']] += 1
+                counts['motion'][p['motion'] if p['motion'] != 'radial'
+                                 else ('approach' if p['approach'] else 'recede')] += 1
+                if p['distance']:
+                    counts['distance'][p['distance']] += 1
+        for group, key in (('scene', 'room'), ('motion', 'motion'), ('distance', 'distance')):
+            total = sum(counts[key].values())
+            for value, share in DEFAULT_RATIOS[group].items():
+                self.assertAlmostEqual(counts[key][value]/total, share, delta=0.01)
+
+    def test_custom_ratios_drop_zero_shares(self):
+        from generate_dataset import DEFAULT_RATIOS, plan_variants
+        ratios = dict(DEFAULT_RATIOS, scene={'hall': 1.0}, motion={'static': 1.0})
+        plans = plan_variants(np.random.default_rng(0), 5, ratios)
+        self.assertEqual({p['room'] for p in plans}, {'hall'})
+        self.assertEqual({p['motion'] for p in plans}, {'static'})
 
 
 class CaptionTests(unittest.TestCase):
     def test_captions(self):
         spatial = {'motion': 'arc', 'start': {'sector': 'front_left', 'distance_class': 'near'},
                    'end': {'sector': 'back_right', 'distance_class': 'near'}, 'via_sector': 'front_right'}
-        caps = make_captions({'type': 'sfx', 'text': 'A dog barks.'}, 'small', spatial)
-        self.assertEqual(caps['zh'], '在一个小房间里，声音：A dog barks，声音在近处从左前方经右前方绕到右后方。')
+        caps = make_captions({'type': 'sfx', 'text': 'A dog barks.'}, 'room', spatial)
+        self.assertEqual(caps['zh'], '在一个房间里，声音：A dog barks，声音在近处从左前方经右前方绕到右后方。')
         self.assertIn('a dog barks, circling nearby from the front left via the front right', caps['en'])
 
     def test_multi_source_filter(self):

@@ -25,13 +25,13 @@ SECTORS = ['front', 'front_left', 'left', 'back_left',
 SECTOR_JITTER_DEG = 15  # stay well inside a 45-degree sector
 DISTANCES = {'near': (1.0, 1.5), 'far': (3.0, 5.0)}
 ROOMS = {
-    # dims ranges (x, y, z) in metres; small rooms cannot hold a 3 m source.
-    'small': {'dims': [(3, 5), (3, 4), (2.5, 3)], 'rt60': (0.2, 0.4), 'distances': ['near']},
-    'medium': {'dims': [(6, 10), (5, 8), (3, 3.5)], 'rt60': (0.4, 0.7), 'distances': ['near', 'far']},
-    'large': {'dims': [(15, 30), (12, 20), (6, 10)], 'rt60': (0.9, 1.6), 'distances': ['near', 'far']},
+    # dims ranges (x, y, z) in metres. 'room' spans bedroom to living room or
+    # classroom; far sources only fit the larger ones (placement retries).
+    'room': {'dims': [(3, 10), (3, 8), (2.5, 3.5)], 'rt60': (0.2, 0.6), 'distances': ['near', 'far']},
+    'hall': {'dims': [(15, 30), (12, 20), (6, 10)], 'rt60': (0.9, 1.6), 'distances': ['near', 'far']},
     'open': {'dims': None, 'rt60': None, 'distances': ['near', 'far']},
 }
-MOTIONS = {'static': 0.4, 'arc': 0.2, 'line': 0.2, 'radial': 0.2}
+MOTIONS = {'static': 0.4, 'arc': 0.15, 'line': 0.15, 'radial': 0.3}  # used when no plan fixes the motion
 WALL_MARGIN = 0.3
 LINE_MIN_FRACTION = 0.75  # closest point of a line vs. its distance band's lower edge
 RADIAL_NEAR, RADIAL_FAR = (1.0, 1.25), (4.0, 5.0)

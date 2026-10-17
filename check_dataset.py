@@ -7,6 +7,7 @@
   Broadband ILD is reported too, but in rooms beyond the critical distance it
   is weak and fluctuates by a dB or two, as in real rooms.
 - Level per room and distance class.
+- Actual shares of scene, motion, distance and sector vs ratios.json.
 
   python check_dataset.py generated/manifest.jsonl
 """
@@ -40,13 +41,41 @@ def ild_db(x):
     return 10*np.log10((np.mean(x[:, 0]**2)+1e-15)/(np.mean(x[:, 1]**2)+1e-15))
 
 
+def report_shares(rows, ratios):
+    """Actual share of each attribute next to the configured ratio."""
+    def motion(r):
+        return r['spatial'].get('radial', r['spatial']['motion'])
+    groups = {
+        'scene': [r['room']['kind'] for r in rows],
+        'motion': [motion(r) for r in rows],
+        'distance': [r['spatial']['start']['distance_class'] for r in rows
+                     if r['spatial']['motion'] != 'radial'],
+        'sector': [r['spatial']['start']['sector'] for r in rows],
+    }
+    print('Shares (actual / configured):')
+    for group, values in groups.items():
+        target = ratios.get(group, {}) if ratios else {}
+        total = sum(target.values()) or 1
+        counts = defaultdict(int)
+        for v in values:
+            counts[v] += 1
+        cells = [f'{k} {counts[k]/max(len(values), 1):.3f}/{target.get(k, 0)/total:.3f}'
+                 for k in sorted(set(counts) | set(target))]
+        print(f'  {group:8s} ' + '  '.join(cells))
+    released = sum(1 for r in rows if r.get('plan', {}).get('distance') not in (None,
+                   r['spatial']['start']['distance_class']))
+    print(f'  planned distance not placeable (rendered at another distance): {released}/{len(rows)}')
+
+
 def main():
     manifest = Path(sys.argv[1])
+    rows = [json.loads(line) for line in manifest.read_text(encoding='utf-8').splitlines() if line]
+    ratios_path = manifest.parent/'ratios.json'
+    report_shares(rows, json.loads(ratios_path.read_text(encoding='utf-8')) if ratios_path.exists() else None)
     ok = defaultdict(lambda: [0, 0, 0])  # itd ok, ild ok, total
     levels = defaultdict(list)
     bad = []
-    for line in manifest.read_text(encoding='utf-8').splitlines():
-        row = json.loads(line)
+    for row in rows:
         audio, fs = sf.read(manifest.parent/row['audio'])
         room, spatial = row['room']['kind'], row['spatial']
         # First and last second of activity within the dry span; silence (and
