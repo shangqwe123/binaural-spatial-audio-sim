@@ -106,22 +106,26 @@ def plan_variants(rng, n):
     once. Small rooms hold neither far sources nor approach/recede, so those
     slots swap rooms with unconstrained ones.
     """
-    def tiled(values):
+    def tiled(values, count=n):
         out = []
-        while len(out) < n:
+        while len(out) < count:
             out += [str(v) for v in rng.permutation(values)]
-        return out[:n]
-    sectors, motions, dists, rooms = (tiled(SECTORS), tiled(MOTION_TYPES),
-                                      tiled(['near', 'far']), tiled(list(ROOMS)))
+        return out[:count]
+    sectors, motions, rooms = tiled(SECTORS), tiled(MOTION_TYPES), tiled(list(ROOMS))
     radial = [m in ('approach', 'recede') for m in motions]
-    needs_space = [radial[i] or dists[i] == 'far' for i in range(n)]
-    for i in range(n):
-        if rooms[i] == 'small' and needs_space[i]:
-            j = next((j for j in range(n) if not needs_space[j] and rooms[j] != 'small'), None)
-            if j is None:
-                rooms[i] = 'medium'
-            else:
-                rooms[i], rooms[j] = rooms[j], rooms[i]
+    # Approach/recede already span near and far; balance near/far over the rest.
+    fixed = iter(tiled(['near', 'far'], n-sum(radial)))
+    dists = [None if r else next(fixed) for r in radial]
+    # Small rooms go to near, non-radial slots first; any left over become medium.
+    fits_small = [int(i) for i in rng.permutation([i for i in range(n) if dists[i] == 'near'])]
+    others = [i for i in range(n) if i not in fits_small]
+    smalls = rooms.count('small')
+    rest = [r for r in rooms if r != 'small'] + ['medium']*max(0, smalls-len(fits_small))
+    rooms = [None]*n
+    for i in fits_small[:smalls]:
+        rooms[i] = 'small'
+    for i, room in zip(fits_small[smalls:]+others, rest):
+        rooms[i] = room
     return [{'room': rooms[i], 'sector': sectors[i],
              'motion': 'radial' if radial[i] else motions[i],
              'approach': motions[i] == 'approach' if radial[i] else None,
