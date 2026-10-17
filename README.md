@@ -5,8 +5,8 @@
 ## 功能
 
 - 将单声道干声渲染为双耳音频，支持静止或线性移动声源。
-- `hrtf` 模式使用 HRIR 和距离增益；`room` 模式先模拟单通道房间响应，再进行双耳化。
-- HRTF 快照同时受时间间隔和声源视角变化限制；RIR 快照同时受时间间隔和位置位移限制。
+- `hrtf` 模式使用 HRIR 和 `1/r` 距离增益；`room` 模式先模拟单通道房间响应（距离衰减只来自 RIR），再进行双耳化。
+- HRTF 快照同时受时间间隔和声源视角变化限制；RIR 快照同时受时间间隔和位置位移限制，可选再限制声源到听者距离的变化。静止声源只用一个快照。
 - 输出双耳 WAV、包含空间参数的 JSON，以及基础 ITD/ILD 诊断 CSV。
 - 批量生成入口按声源组固定 train/validation/test 划分，并记录 manifest。
 
@@ -59,8 +59,11 @@ python render.py --input path/to/mono.wav --mode room --room 12 10 4 --listener 
 | `--max-angle-step-deg` | 1° | 相邻 HRTF 快照的最大视角变化 |
 | `--rir-step-ms` | 100 ms | 相邻 RIR 快照的最大时间间隔 |
 | `--max-rir-distance-m` | 0.2 m | 相邻 RIR 快照的最大声源位移 |
+| `--max-rir-radial-m` | 关闭 | 相邻 RIR 快照之间声源到听者距离的最大变化 |
 
-静止声源只生成一个 RIR 快照。收紧这些阈值会增加计算量；批量训练前建议先试听并抽查位置标签。
+静止声源只生成一个 HRTF 快照和一个 RIR 快照。收紧这些阈值会增加计算量；批量训练前建议先试听并抽查位置标签。
+
+相邻 RIR 快照之间做线性过渡时，两者直达声的到达时间不同，叠加后会产生梳状滤波（音色发虚）。声源朝听者靠近或远离时最明显，绕听者转动时几乎没有。需要时可加 `--max-rir-radial-m 0.02`，它只在距离变化大的轨迹上增加快照数。
 
 ## 批量生成
 
@@ -71,6 +74,15 @@ python generate_dataset.py --input-dir path/to/mono_audio --output-dir generated
 ```
 
 输出包含 `train/`、`validation/`、`test/` 下的双耳 WAV、`manifest.jsonl` 和 `errors.json`。同一个输入文件的变体保持在同一 split。输入音频的来源和许可由使用者负责确认。
+
+轨迹采样规则：
+
+- 方位角覆盖全周（前、后、左、右），仰角 -10°–25°，半径 1.2 m 起。
+- 每 4 个变体中 1 个是静止声源，其余是绕听者的直线弦，方位跨度 40°–150°。
+- 轨迹全程到听者的距离不小于 `--min-distance`（默认 1.0 m），端点距墙至少 0.1 m；不满足就重新采样。
+- `motion` 标签为 `static`、`azimuth_decreasing`（俯视顺时针，在前方即从左到右）或 `azimuth_increasing`。
+- 随机种子由 `--seed`、输入文件相对路径和变体编号决定，增删其他文件不影响已有样本。
+- manifest 中 `audio` 路径相对于输出目录；一个输入文件的所有变体都成功后才写入 manifest。
 
 ## 输出和坐标
 
@@ -84,7 +96,18 @@ python generate_dataset.py --input-dir path/to/mono_audio --output-dir generated
 
 `hrtf` 模式对干声进行时变 HRIR 卷积，并按 `1/r` 调整幅度；不模拟精确传播延迟。`room` 模式使用 Pyroomacoustics 在头部中心模拟一个全向接收点，再按声源直达方向应用双耳 HRIR。它没有给每条反射路径分别应用方向相关的 HRIR，因此属于简化的 RIR-HRIR 串联，不是完整 BRIR 仿真。
 
-HRTF 插值先近似对齐 HRIR 峰值，再对球面邻域内的频谱和延迟加权；这会平滑实测方向细节。模型假设听者头部固定、声源按 XYZ 直线匀速移动，不精确模拟多普勒、近场 HRTF、遮挡或复杂晚期混响。宽带 ITD/ILD 受信号内容和混响影响，不能单独代表方向定位准确率。
+HRTF 插值先按 HRIR 起点（峰值以下 -20 dB 的第一个采样）对齐，再对球面邻域内的频谱和延迟加权；这会平滑实测方向细节。模型假设听者头部固定、声源按 XYZ 直线匀速移动，不精确模拟多普勒、近场 HRTF、遮挡或复杂晚期混响。宽带 ITD/ILD 受信号内容和混响影响，不能单独代表方向定位准确率。
+
+## Web Audio 对比
+
+把本项目的渲染结果和浏览器内置 HRTF（`PannerNode`）在同一轨迹上对比试听：
+
+```bash
+python render.py --output outputs/hrtf_left_to_right_smooth.wav
+python webaudio_server.py
+```
+
+然后打开 `http://127.0.0.1:8766/webaudio_compare.html`。
 
 ## 验证
 

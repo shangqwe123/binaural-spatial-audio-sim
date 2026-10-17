@@ -60,7 +60,11 @@ class HrirBank:
         # blending. Zero padding prevents circular wrap into the useful output.
         self.nfft = 4 * self.ir.shape[-1]
         self.freq = np.fft.rfftfreq(self.nfft)
-        self.delays = np.argmax(np.abs(self.ir), axis=-1).astype(float)
+        # Onset (first sample within -20 dB of the IR peak) is more stable than
+        # the raw peak on the contralateral ear, where the peak is weak.
+        magnitude = np.abs(self.ir)
+        self.delays = np.argmax(magnitude >= 0.1*magnitude.max(axis=-1, keepdims=True),
+                                axis=-1).astype(float)
         spectrum = np.fft.rfft(self.ir, n=self.nfft, axis=-1)
         self.aligned = spectrum * np.exp(
             2j*np.pi*self.delays[..., None]*self.freq)
@@ -88,6 +92,8 @@ def adaptive_hrtf_nodes(start, end, listener, signal_length, fs,
     if signal_length < 2:
         return np.array([0]), np.asarray(start, dtype=float)[None, :]
     start, end, listener = map(lambda x: np.asarray(x, dtype=float), (start, end, listener))
+    if np.allclose(start, end):
+        return np.array([0]), start[None, :]
     delta = end-start
 
     def position(sample):
@@ -124,35 +130,40 @@ def adaptive_hrtf_nodes(start, end, listener, signal_length, fs,
 
 
 def adaptive_position_nodes(start, end, signal_length, fs,
-                            max_distance_m=0.2, max_step_ms=100.0):
-    """Bound source displacement and elapsed time between spatial snapshots."""
-    if signal_length < 2:
-        return np.array([0]), np.asarray(start, dtype=float)[None, :]
+                            max_distance_m=0.2, max_step_ms=100.0,
+                            listener=None, max_radial_m=None):
+    """Bound source displacement and elapsed time between spatial snapshots.
+
+    With listener and max_radial_m, also bound the change of source-listener
+    distance. Crossfading two RIRs whose direct paths differ by d metres sums
+    copies offset by d/c seconds (comb filtering), so this is the cheap bound
+    that matters: tangential motion adds almost no snapshots.
+    """
     start, end = np.asarray(start, dtype=float), np.asarray(end, dtype=float)
+    if signal_length < 2 or np.allclose(start, end):
+        return np.array([0]), start[None, :]
     delta = end-start
     distance = float(np.linalg.norm(delta))
     by_distance = max(1, int(np.ceil(distance/max_distance_m)))
     by_time = max(1, int(np.ceil((signal_length-1)/(fs*max_step_ms/1000))))
     count = max(by_distance, by_time)
+    if listener is not None and max_radial_m:
+        listener = np.asarray(listener, dtype=float)
+        r0, r1 = np.linalg.norm(start-listener), np.linalg.norm(end-listener)
+        r_min = closest_distance(start, end, listener)
+        # |source-listener| is convex along a line: total variation is exact.
+        count = max(count, int(np.ceil((r0+r1-2*r_min)/max_radial_m)))
     nodes = np.unique(np.rint(np.linspace(0, signal_length-1, count+1)).astype(int))
     positions = start[None, :] + delta[None, :]*nodes[:, None]/(signal_length-1)
     return nodes, positions
 
 
-def snapshot_filter(bank, source, listener, room_dims, absorption, order, mode):
-    vector = source - listener
-    distance = np.linalg.norm(vector)
-    if distance < 0.2:
-        raise ValueError('Keep source at least 0.2 m from listener')
-    hrir = bank.at(vector)
-    if mode == 'hrtf':
-        # Direction-only demo: relative 1/r gain, no additional flight-time delay.
-        return hrir / distance
-    import pyroomacoustics as pra
-    room = pra.ShoeBox(room_dims, fs=bank.fs,
-                       materials=pra.Material(absorption), max_order=order)
-    rir = room_rir(source, listener, room_dims, absorption, order, bank.fs)
-    return np.stack([fftconvolve(rir, ear) for ear in hrir])
+def closest_distance(start, end, listener):
+    """Smallest source-listener distance along the straight segment."""
+    start, end, listener = (np.asarray(v, dtype=float) for v in (start, end, listener))
+    delta = end-start
+    u = np.clip(np.dot(listener-start, delta)/max(np.dot(delta, delta), 1e-15), 0, 1)
+    return float(np.linalg.norm(start+u*delta-listener))
 
 
 def room_rir(source, listener, room_dims, absorption, order, fs):
@@ -163,6 +174,35 @@ def room_rir(source, listener, room_dims, absorption, order, fs):
     room.add_microphone_array(listener[:, None])
     room.compute_rir()
     return np.asarray(room.rir[0][0])
+
+
+def render_binaural(signal, bank, start, end, listener, mode, room_dims=None,
+                    absorption=0.4, order=3, step_ms=20.0, max_angle_deg=1.0,
+                    rir_step_ms=100.0, max_rir_distance_m=0.2, max_rir_radial_m=None,
+                    progress=False):
+    """Render a straight-line source; returns (audio, hrtf nodes, positions, RIR count)."""
+    start, end, listener = (np.asarray(v, dtype=float) for v in (start, end, listener))
+    nodes, positions = adaptive_hrtf_nodes(start, end, listener, len(signal), bank.fs,
+                                           max_angle_deg, step_ms)
+    if mode == 'hrtf':
+        # Direction-only demo: relative 1/r gain, no additional flight-time delay.
+        filters = [bank.at(pos-listener) / np.linalg.norm(pos-listener) for pos in positions]
+        return render_snapshots(signal, nodes, filters), nodes, positions, None
+    # Room geometry/absorption move slowly: simulate sparse RIR knots first,
+    # then render at the fine HRTF rate. This avoids thousands of room builds.
+    rir_nodes, rir_positions = adaptive_position_nodes(
+        start, end, len(signal), bank.fs, max_rir_distance_m, rir_step_ms,
+        listener, max_rir_radial_m)
+    rirs = []
+    for i, pos in enumerate(rir_positions):
+        rirs.append(room_rir(pos, listener, room_dims, absorption, order, bank.fs)[None, :])
+        if progress and i % 20 == 0:
+            print(f'Room RIRs: {i+1}/{len(rir_nodes)}', flush=True)
+    room_signal = render_snapshots(signal, rir_nodes, rirs)[:, 0]
+    # The RIR already contains 1/(4*pi*r) spreading and flight time; HRIRs add
+    # only direction here, otherwise distance attenuation is applied twice.
+    filters = [bank.at(pos-listener) for pos in positions]
+    return render_snapshots(room_signal, nodes, filters), nodes, positions, len(rirs)
 
 
 def render_snapshots(signal, nodes, filters):
@@ -229,9 +269,13 @@ def main():
                    help='Maximum time between RIR snapshots')
     p.add_argument('--max-rir-distance-m', type=float, default=0.2,
                    help='Maximum source displacement between RIR snapshots')
+    p.add_argument('--max-rir-radial-m', type=float, default=None,
+                   help='Optional: maximum change of source-listener distance between RIR '
+                        'snapshots (e.g. 0.02); reduces comb filtering for approaching sources')
     a = p.parse_args()
     if (a.seconds <= 0 or a.step_ms <= 0 or a.rir_step_ms <= 0 or
             a.max_angle_step_deg <= 0 or a.max_rir_distance_m <= 0 or
+            (a.max_rir_radial_m is not None and a.max_rir_radial_m <= 0) or
             a.order < 0 or not 0 <= a.absorption <= 1):
         p.error('Invalid duration, step, reflection order or absorption')
     if not a.sofa.exists() and a.download_hrtf:
@@ -261,29 +305,13 @@ def main():
     start, end, listener, dims = map(np.array, [a.start, a.end, a.listener, a.room])
     if not all(np.all((v > 0) & (v < dims)) for v in [start, end, listener]):
         p.error('Source and listener must be strictly inside room')
-    nodes, positions = adaptive_hrtf_nodes(start, end, listener, len(signal), bank.fs,
-                                           a.max_angle_step_deg, a.step_ms)
     # Check the full line segment, not just its sampled endpoints.
-    delta = end-start
-    u = np.clip(np.dot(listener-start, delta)/max(np.dot(delta, delta), 1e-15), 0, 1)
-    if np.linalg.norm(start+u*delta-listener) < 0.2:
+    if closest_distance(start, end, listener) < 0.2:
         p.error('Trajectory passes too close to listener')
-    if a.mode == 'hrtf':
-        hrir_filters = [bank.at(pos-listener) / np.linalg.norm(pos-listener) for pos in positions]
-        audio = render_snapshots(signal, nodes, hrir_filters)
-    else:
-        # Room geometry/absorption move slowly: simulate sparse RIR knots first,
-        # then render at the fine HRTF rate. This avoids thousands of room builds.
-        rir_nodes, rir_positions = adaptive_position_nodes(
-            start, end, len(signal), bank.fs, a.max_rir_distance_m, a.rir_step_ms)
-        rirs = []
-        for i, pos in enumerate(rir_positions):
-            rirs.append(room_rir(pos, listener, dims, a.absorption, a.order, bank.fs)[None, :])
-            if i % 20 == 0:
-                print(f'Room RIRs: {i+1}/{len(rir_nodes)}', flush=True)
-        room_signal = render_snapshots(signal, rir_nodes, rirs)[:, 0]
-        hrir_filters = [bank.at(pos-listener) / np.linalg.norm(pos-listener) for pos in positions]
-        audio = render_snapshots(room_signal, nodes, hrir_filters)
+    audio, nodes, positions, rir_count = render_binaural(
+        signal, bank, start, end, listener, a.mode, dims, a.absorption, a.order,
+        a.step_ms, a.max_angle_step_deg, a.rir_step_ms, a.max_rir_distance_m,
+        a.max_rir_radial_m, progress=True)
     # One gain for BOTH ears and the entire clip preserves ILD and distance changes.
     gain = min(1.0, 0.95/max(float(np.max(np.abs(audio))), 1e-15))
     audio *= gain
@@ -292,13 +320,15 @@ def main():
     relative = positions-listener
     metadata = {
         'implementation': 'simplified RIR-HRIR cascade; not official reproduction',
-        'hrir_interpolation': 'local 48-neighbor peak-delay-aligned spherical Gaussian kernel, sigma=7.5deg',
+        'hrir_interpolation': 'local 48-neighbor onset-delay-aligned spherical Gaussian kernel, sigma=7.5deg',
+        'distance_gain': '1/r on HRIR' if a.mode == 'hrtf' else 'from room RIR only',
         'step_ms': a.step_ms,
         'max_angle_step_deg': a.max_angle_step_deg,
         'hrtf_snapshot_count': int(len(nodes)),
         'rir_step_ms': a.rir_step_ms if a.mode == 'room' else None,
         'max_rir_distance_m': a.max_rir_distance_m if a.mode == 'room' else None,
-        'rir_snapshot_count': int(len(rirs)) if a.mode == 'room' else None,
+        'max_rir_radial_m': a.max_rir_radial_m if a.mode == 'room' else None,
+        'rir_snapshot_count': rir_count,
         'mode': a.mode, 'sample_rate': bank.fs, 'channels': ['left', 'right'],
         'sofa': str(a.sofa.absolute()), 'input': str(a.input) if a.input else 'seeded noise, seed=42',
         'room_m': a.room, 'listener_m': a.listener, 'absorption': a.absorption,
