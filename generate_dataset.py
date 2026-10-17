@@ -20,10 +20,11 @@ from scipy.signal import resample_poly
 
 from captions import make_captions
 from render import HrirBank
-from scene import (ROOMS, Hrirs, distance_class, path_fraction, place_listener, positions,
+from scene import (ROOMS, SECTORS, Hrirs, distance_class, path_fraction, place_listener, positions,
                    render_scene, sample_motion, sample_room, sample_timing, sector_of, wrap_deg)
 
 HRIRS = None
+MOTION_TYPES = ['static', 'arc', 'line', 'approach', 'recede']
 
 
 def stable_split(group):
@@ -97,17 +98,52 @@ def describe(traj, listener, n, fs):
     return spatial
 
 
-def sample_scene(rng, source):
-    for _ in range(200):
-        room = sample_room(rng, str(rng.choice(list(ROOMS))))
-        for _ in range(20):
-            traj = sample_motion(rng, room['kind'])
-            if not allowed(source, room['kind'], traj):
-                continue
-            listener = place_listener(rng, room, traj)
-            if listener is not None:
-                return room, traj, listener
-    raise ValueError('could not place a scene')
+def plan_variants(rng, n):
+    """Spread one source's n variants evenly over sectors, rooms, motions, distances.
+
+    Each attribute cycles through shuffled copies of all its values, so with
+    n=8 every sector appears once, every room twice and every motion at least
+    once. Small rooms hold neither far sources nor approach/recede, so those
+    slots swap rooms with unconstrained ones.
+    """
+    def tiled(values):
+        out = []
+        while len(out) < n:
+            out += [str(v) for v in rng.permutation(values)]
+        return out[:n]
+    sectors, motions, dists, rooms = (tiled(SECTORS), tiled(MOTION_TYPES),
+                                      tiled(['near', 'far']), tiled(list(ROOMS)))
+    radial = [m in ('approach', 'recede') for m in motions]
+    needs_space = [radial[i] or dists[i] == 'far' for i in range(n)]
+    for i in range(n):
+        if rooms[i] == 'small' and needs_space[i]:
+            j = next((j for j in range(n) if not needs_space[j] and rooms[j] != 'small'), None)
+            if j is None:
+                rooms[i] = 'medium'
+            else:
+                rooms[i], rooms[j] = rooms[j], rooms[i]
+    return [{'room': rooms[i], 'sector': sectors[i],
+             'motion': 'radial' if radial[i] else motions[i],
+             'approach': motions[i] == 'approach' if radial[i] else None,
+             'distance': None if radial[i] else dists[i]} for i in range(n)]
+
+
+def sample_scene(rng, source, plan):
+    """Room, trajectory and listener for one planned variant.
+
+    If the planned distance cannot fit (e.g. a far arc in a medium room), the
+    distance is released after 100 tries; labels always describe what was rendered.
+    """
+    for attempt in range(200):
+        room = sample_room(rng, plan['room'])
+        dist = plan['distance'] if attempt < 100 else None
+        traj = sample_motion(rng, room['kind'], plan['motion'], plan['sector'], dist, plan['approach'])
+        if not allowed(source, room['kind'], traj):
+            continue
+        listener = place_listener(rng, room, traj)
+        if listener is not None:
+            return room, traj, listener
+    raise ValueError(f'could not place planned scene {plan}')
 
 
 def init_worker(sofa):
@@ -124,11 +160,13 @@ def process(job):
         if active < a['min_active']:
             raise ValueError(f'only {active:.2f}s active audio')
         rows = []
+        # The plan depends only on the source, so --resume reproduces it.
+        plans = plan_variants(np.random.default_rng([a['seed'], int(base, 16)]), a['variants'])
         for variant in job['variants']:
             key = f'{base}_v{variant:02d}'
             seed = [a['seed'], int(base, 16), variant]
             rng = np.random.default_rng(seed)
-            room, traj, listener = sample_scene(rng, source)
+            room, traj, listener = sample_scene(rng, source, plans[variant])
             traj = sample_timing(rng, traj, span, fs)
             audio, nodes, _ = render_scene(signal, HRIRS, traj, listener, room, rng)
             peak = float(np.max(np.abs(audio)))
@@ -144,6 +182,7 @@ def process(job):
             spatial = describe(traj, listener, len(signal), fs)
             rows.append({
                 'id': key, 'audio': f'{split}/{key}.wav', 'split': split,
+                'set_id': base, 'variant': variant,  # all variants share the same source audio
                 'sample_rate': a['out_sr'], 'channels': ['left', 'right'],
                 'duration_s': round(len(audio)/a['out_sr'], 3),
                 'dry_duration_s': round(len(signal)/fs, 3),  # rest is propagation + reverb tail
@@ -168,7 +207,9 @@ def main():
     p.add_argument('--sources', type=Path, nargs='+', required=True, help='Source manifests (JSONL)')
     p.add_argument('--output-dir', type=Path, default=Path('generated'))
     p.add_argument('--sofa', type=Path, default=Path(__file__).parent/'data/hrtf_nh2.sofa')
-    p.add_argument('--variants', type=int, default=2, help='Spatial scenes per source clip')
+    p.add_argument('--variants', type=int, default=8,
+                   help='Parallel spatial versions per source clip, spread evenly over '
+                        'sectors, rooms, motions and distances')
     p.add_argument('--seed', type=int, default=20261017)
     p.add_argument('--max-duration', type=float, default=15.0, help='Trim sources to this many seconds')
     p.add_argument('--min-active', type=float, default=1.0, help='Minimum non-silent seconds')

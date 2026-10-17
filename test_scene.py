@@ -98,6 +98,22 @@ class SceneTests(unittest.TestCase):
         self.assertAlmostEqual(onset/hrirs.fs, 2/C, delta=0.002)
 
 
+class PlanTests(unittest.TestCase):
+    def test_parallel_plan_covers_every_type(self):
+        from generate_dataset import plan_variants
+        for seed in range(50):
+            plans = plan_variants(np.random.default_rng(seed), 8)
+            self.assertEqual({p['sector'] for p in plans}, set(SECTORS))
+            self.assertEqual(sorted(p['room'] for p in plans).count('small'), 2)
+            kinds = {p['motion'] if p['motion'] != 'radial' else ('approach' if p['approach'] else 'recede')
+                     for p in plans}
+            self.assertEqual(kinds, {'static', 'arc', 'line', 'approach', 'recede'})
+            for p in plans:  # small rooms: near only, no approach/recede
+                if p['room'] == 'small':
+                    self.assertEqual(p['distance'], 'near')
+                    self.assertNotEqual(p['motion'], 'radial')
+
+
 class CaptionTests(unittest.TestCase):
     def test_captions(self):
         spatial = {'motion': 'arc', 'start': {'sector': 'front_left', 'distance_class': 'near'},

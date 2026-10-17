@@ -90,7 +90,7 @@ python prepare_sources.py audiocaps --csv train.csv val.csv test.csv --audio-dir
 ### 2. 生成
 
 ```bash
-python generate_dataset.py --sources sources/speech.jsonl sources/sfx.jsonl --output-dir generated --variants 2 --workers 16
+python generate_dataset.py --sources sources/speech.jsonl sources/sfx.jsonl --output-dir generated --variants 8 --workers 16
 python check_dataset.py generated/manifest.jsonl
 ```
 
@@ -98,13 +98,16 @@ python check_dataset.py generated/manifest.jsonl
 
 ### 场景采样规则
 
+**平行数据**：每条源音频生成 `--variants` 条（默认 8）不同空间版本，内容完全相同，只有空间属性不同，同一组的 `set_id` 相同。组内各属性均匀轮换：n=8 时 8 个方向各 1 条、4 种场景各 2 条、5 种运动（静止、圆弧、直线、走近、走远）至少各 1 条，远近各半。小房间不放远处和走近/走远，冲突时和其他条交换场景。同一组总在同一个 train/validation/test 划分里。
+
+
 | 属性 | 取值 |
 | --- | --- |
-| 场景 | 小房间（3–5×3–4×2.5–3 m，RT60 0.2–0.4 s）、中房间（6–10×5–8×3–3.5 m，0.4–0.7 s）、大厅（15–30×12–20×6–10 m，0.9–1.6 s）、开放环境，各占 1/4 |
+| 场景 | 小房间（3–5×3–4×2.5–3 m，RT60 0.2–0.4 s）、中房间（6–10×5–8×3–3.5 m，0.4–0.7 s）、大厅（15–30×12–20×6–10 m，0.9–1.6 s）、开放环境 |
 | 方向 | 8 个扇区（正前、左前、左、左后、正后、右后、右、右前），声源落在扇区中心 ±15° 以内 |
 | 距离 | 近 1.0–1.5 m，远 3–5 m；小房间只有近 |
 | 高度 | 仰角 ±10°，描述中不提 |
-| 运动 | 静止 40%；圆弧 20%（距离不变，跨 2–4 个扇区）；直线 20%（跨 2 个扇区，如左前→右前，中点会近一些，但不低于距离档下限的 75%）；靠近/远离 20%（方向不变，1.0–1.25 m ↔ 4–5 m，小房间没有） |
+| 运动 | 组内均匀轮换：静止；圆弧（距离不变，跨 2–4 个扇区）；直线（跨 2 个扇区，如左前→右前，中点会近一些，但不低于距离档下限的 75%）；靠近/远离（方向不变，1.0–1.25 m ↔ 4–5 m，小房间没有） |
 | 运动时间 | "停—动—停"：在声源有声的区间内随机放一段 2–4 s 的移动，之前停在起点、之后停在终点；manifest 记录 `move_start_s` / `move_end_s` |
 | 听者 | 在房间内随机位置，高度 1.2–1.7 m；整条轨迹离墙至少 0.3 m |
 

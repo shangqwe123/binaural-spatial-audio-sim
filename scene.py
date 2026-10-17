@@ -65,27 +65,31 @@ def sample_room(rng, kind):
     return {'kind': kind, 'dims': dims, 'rt60': rt60, 'alpha': alpha, 'beta': np.sqrt(1-alpha)}
 
 
-def sample_motion(rng, room_kind):
+def sample_motion(rng, room_kind, kind=None, sector=None, dist=None, approach=None):
     """Draw one trajectory; every motion changes a single attribute.
 
     static: nothing; arc: azimuth at fixed distance (90-180 deg); line: straight
     90-degree chord (passes ~0.7x closer mid-way); radial: distance at fixed
-    azimuth (far<->near).
+    azimuth (far<->near). kind/sector (start sector)/dist/approach fix those
+    attributes; anything left as None is drawn at random.
     """
     distances = ROOMS[room_kind]['distances']
-    kinds = [k for k in MOTIONS if k != 'radial' or 'far' in distances]
-    p = np.array([MOTIONS[k] for k in kinds])
-    kind = str(rng.choice(kinds, p=p/p.sum()))
-    k0 = int(rng.integers(8))
+    if kind is None:
+        kinds = [k for k in MOTIONS if k != 'radial' or 'far' in distances]
+        p = np.array([MOTIONS[k] for k in kinds])
+        kind = str(rng.choice(kinds, p=p/p.sum()))
+    k0 = SECTORS.index(sector) if sector is not None else int(rng.integers(8))
     az0 = 45*k0 + rng.uniform(-SECTOR_JITTER_DEG, SECTOR_JITTER_DEG)
     traj = {'kind': kind, 'el': float(rng.uniform(-10, 10)), 'az0': float(wrap_deg(az0))}
     if kind == 'radial':
         # Wider than the static bands (ratio 3.2-5x, ~10-14 dB of direct level).
         near, far = rng.uniform(*RADIAL_NEAR), rng.uniform(*RADIAL_FAR)
-        approach = bool(rng.random() < 0.5)
+        if approach is None:
+            approach = bool(rng.random() < 0.5)
         traj.update(az1=traj['az0'], r0=far if approach else near, r1=near if approach else far)
         return traj
-    dist = str(rng.choice(distances))
+    if dist is None:
+        dist = str(rng.choice(distances))
     lo, hi = DISTANCES[dist]
     if kind == 'static':
         r = rng.uniform(lo, hi)
