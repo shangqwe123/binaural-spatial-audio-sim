@@ -178,7 +178,7 @@ def room_rir(source, listener, room_dims, absorption, order, fs):
 
 def render_binaural(signal, bank, start, end, listener, mode, room_dims=None,
                     absorption=0.4, order=3, step_ms=20.0, max_angle_deg=1.0,
-                    rir_step_ms=100.0, max_rir_distance_m=0.2, max_rir_radial_m=None,
+                    rir_step_ms=100.0, max_rir_distance_m=0.2, max_rir_radial_m=0.02,
                     progress=False):
     """Render a straight-line source; returns (audio, hrtf nodes, positions, RIR count)."""
     start, end, listener = (np.asarray(v, dtype=float) for v in (start, end, listener))
@@ -269,13 +269,13 @@ def main():
                    help='Maximum time between RIR snapshots')
     p.add_argument('--max-rir-distance-m', type=float, default=0.2,
                    help='Maximum source displacement between RIR snapshots')
-    p.add_argument('--max-rir-radial-m', type=float, default=None,
-                   help='Optional: maximum change of source-listener distance between RIR '
-                        'snapshots (e.g. 0.02); reduces comb filtering for approaching sources')
+    p.add_argument('--max-rir-radial-m', type=float, default=0.02,
+                   help='Maximum change of source-listener distance between RIR snapshots; '
+                        'reduces comb filtering for approaching sources (0 disables)')
     a = p.parse_args()
     if (a.seconds <= 0 or a.step_ms <= 0 or a.rir_step_ms <= 0 or
             a.max_angle_step_deg <= 0 or a.max_rir_distance_m <= 0 or
-            (a.max_rir_radial_m is not None and a.max_rir_radial_m <= 0) or
+            a.max_rir_radial_m < 0 or
             a.order < 0 or not 0 <= a.absorption <= 1):
         p.error('Invalid duration, step, reflection order or absorption')
     if not a.sofa.exists() and a.download_hrtf:

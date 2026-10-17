@@ -75,8 +75,8 @@ def main():
     p.add_argument('--max-angle-step-deg', type=float, default=1.0)
     p.add_argument('--rir-step-ms', type=float, default=100)
     p.add_argument('--max-rir-distance-m', type=float, default=0.2)
-    p.add_argument('--max-rir-radial-m', type=float, default=None,
-                   help='Optional bound on source-listener distance change between RIR snapshots')
+    p.add_argument('--max-rir-radial-m', type=float, default=0.02,
+                   help='Maximum source-listener distance change between RIR snapshots (0 disables)')
     p.add_argument('--min-distance', type=float, default=1.0,
                    help='Minimum source-listener distance along every trajectory (m)')
     p.add_argument('--absorption', type=float, default=0.4)
@@ -86,7 +86,7 @@ def main():
     a = p.parse_args()
     if (a.variants < 1 or min(a.step_ms, a.rir_step_ms, a.duration, a.min_distance,
                                a.max_angle_step_deg, a.max_rir_distance_m) <= 0 or
-            (a.max_rir_radial_m is not None and a.max_rir_radial_m <= 0)):
+            a.max_rir_radial_m < 0):
         p.error('variants, time steps, distances and duration must be positive')
     if not a.sofa.is_file():
         p.error(f'SOFA file not found: {a.sofa}')
