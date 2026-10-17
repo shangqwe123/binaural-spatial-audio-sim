@@ -20,8 +20,8 @@ from scipy.signal import resample_poly
 
 from captions import make_captions
 from render import HrirBank
-from scene import (ROOMS, Hrirs, distance_class, place_listener, positions, render_scene,
-                   sample_motion, sample_room, sector_of, wrap_deg)
+from scene import (ROOMS, Hrirs, distance_class, path_fraction, place_listener, positions,
+                   render_scene, sample_motion, sample_room, sample_timing, sector_of, wrap_deg)
 
 HRIRS = None
 
@@ -38,7 +38,10 @@ def allowed(source, room_kind, traj):
 
 
 def load_source(path, fs, max_seconds, target_dbfs):
-    """Mono, resampled, trimmed, active-RMS normalised; returns (signal, active seconds)."""
+    """Mono, resampled, trimmed, active-RMS normalised.
+
+    Returns (signal, active seconds, (first, last) sample of the active span).
+    """
     data, rate = sf.read(path, dtype='float32', always_2d=True)
     if not np.isfinite(data).all():
         raise ValueError('audio contains NaN/Inf')
@@ -55,7 +58,8 @@ def load_source(path, fs, max_seconds, target_dbfs):
     active = energy > energy.max()*1e-4  # within 40 dB of the loudest frame
     # Level is fixed before rendering so distance and room change loudness.
     gain = 10**(target_dbfs/20)/np.sqrt(np.mean(energy[active]))
-    return x*gain, active.sum()*frame/fs
+    loud = np.flatnonzero(energy > energy.max()*1e-3)  # span for motion: within 30 dB
+    return x*gain, active.sum()*frame/fs, (int(loud[0]*frame), int((loud[-1]+1)*frame))
 
 
 def endpoint(listener, point):
@@ -78,9 +82,12 @@ def describe(traj, listener, n, fs):
         spatial['via_sector'] = sector_of(wrap_deg((traj['az0']+traj['az1'])/2))
     if traj['kind'] == 'radial':
         spatial['radial'] = 'approach' if traj['r1'] < traj['r0'] else 'recede'
+    if 'move' in traj:  # held at the start/end position outside this window
+        spatial['move_start_s'] = round(traj['move'][0]/fs, 3)
+        spatial['move_end_s'] = round(traj['move'][1]/fs, 3)
     # 10 Hz knots over dry (emission) time: [t, azimuth, elevation, distance].
     times = np.arange(0, n/fs, 0.1) if traj['kind'] != 'static' else np.zeros(1)
-    pts =positions(traj, listener, times/max((n-1)/fs, 1e-9))-listener
+    pts = positions(traj, listener, path_fraction(traj, times*fs, n))-listener
     spatial['trajectory_10hz'] = [
         [round(float(t), 3), round(float(np.rad2deg(np.arctan2(v[1], v[0]))), 2),
          round(float(np.rad2deg(np.arctan2(v[2], np.hypot(v[0], v[1])))), 2),
@@ -113,7 +120,7 @@ def process(job):
     source, base, a = job['source'], job['base'], job['args']
     fs = HRIRS.fs
     try:
-        signal, active = load_source(source['audio'], fs, a['max_duration'], a['target_dbfs'])
+        signal, active, span = load_source(source['audio'], fs, a['max_duration'], a['target_dbfs'])
         if active < a['min_active']:
             raise ValueError(f'only {active:.2f}s active audio')
         rows = []
@@ -122,6 +129,7 @@ def process(job):
             seed = [a['seed'], int(base, 16), variant]
             rng = np.random.default_rng(seed)
             room, traj, listener = sample_scene(rng, source)
+            traj = sample_timing(rng, traj, span, fs)
             audio, nodes, _ = render_scene(signal, HRIRS, traj, listener, room, rng)
             peak = float(np.max(np.abs(audio)))
             clip_gain = min(1.0, 0.99/max(peak, 1e-12))  # only touches rare overloads

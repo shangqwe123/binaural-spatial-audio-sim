@@ -34,6 +34,8 @@ ROOMS = {
 MOTIONS = {'static': 0.4, 'arc': 0.2, 'line': 0.2, 'radial': 0.2}
 WALL_MARGIN = 0.3
 LINE_MIN_FRACTION = 0.75  # closest point of a line vs. its distance band's lower edge
+RADIAL_NEAR, RADIAL_FAR = (1.0, 1.25), (4.0, 5.0)
+MOVE_SECONDS = (2.0, 4.0)  # roughly walking pace; the source holds still before/after
 
 
 def wrap_deg(a):
@@ -78,7 +80,8 @@ def sample_motion(rng, room_kind):
     az0 = 45*k0 + rng.uniform(-SECTOR_JITTER_DEG, SECTOR_JITTER_DEG)
     traj = {'kind': kind, 'el': float(rng.uniform(-10, 10)), 'az0': float(wrap_deg(az0))}
     if kind == 'radial':
-        near, far = rng.uniform(*DISTANCES['near']), rng.uniform(*DISTANCES['far'])
+        # Wider than the static bands (ratio 3.2-5x, ~10-14 dB of direct level).
+        near, far = rng.uniform(*RADIAL_NEAR), rng.uniform(*RADIAL_FAR)
         approach = bool(rng.random() < 0.5)
         traj.update(az1=traj['az0'], r0=far if approach else near, r1=near if approach else far)
         return traj
@@ -103,8 +106,32 @@ def sample_motion(rng, room_kind):
     return traj
 
 
+def sample_timing(rng, traj, active, fs):
+    """Hold - move - hold: a 2-4 s move placed inside the active span.
+
+    Spreading the move over a whole (possibly 15 s) clip makes it too slow to
+    hear against the natural level changes of speech. active = (first, last)
+    sample of the non-silent part. Sets traj['move'] = [start, end] samples.
+    """
+    if traj['kind'] == 'static':
+        return traj
+    first, last = active
+    span = last-first
+    length = min(span, int(rng.uniform(*MOVE_SECONDS)*fs))
+    start = first + int(rng.integers(0, span-length+1))
+    traj['move'] = [start, start+max(length, 1)]
+    return traj
+
+
+def path_fraction(traj, samples, n):
+    """Fraction of the path covered at each sample (linear within the move)."""
+    samples = np.asarray(samples, dtype=float)
+    start, end = traj.get('move', (0, max(n-1, 1)))
+    return np.clip((samples-start)/max(end-start, 1), 0, 1)
+
+
 def positions(traj, listener, u):
-    """Source xyz at normalised times u in [0, 1]."""
+    """Source xyz at path fractions u in [0, 1]."""
     u = np.atleast_1d(np.asarray(u, dtype=float))
     el = np.deg2rad(traj['el'])
 
@@ -296,7 +323,7 @@ def render_scene(signal, hrirs, traj, listener, room, rng,
                  max_angle_deg=1.0, max_step_ms=20.0, max_radial_m=0.02):
     """Return (binaural audio [samples, 2], snapshot nodes, snapshot positions)."""
     n = len(signal)
-    position = lambda samples: positions(traj, listener, np.asarray(samples)/max(n-1, 1))
+    position = lambda samples: positions(traj, listener, path_fraction(traj, samples, n))
     nodes = adaptive_nodes(position, n, hrirs.fs, listener, max_angle_deg, max_step_ms, max_radial_m)
     points = position(nodes)
     length = early_length(points, listener, room, hrirs.fs, 2*hrirs.bank.ir.shape[-1])
