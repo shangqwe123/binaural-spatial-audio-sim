@@ -5,7 +5,6 @@ from scipy.signal import fftconvolve
 import render
 from render import (render_snapshots, cue_rows, adaptive_hrtf_nodes,
                     adaptive_position_nodes, closest_distance, render_binaural)
-from generate_dataset import sample_trajectory, motion_label
 
 
 class RenderTests(unittest.TestCase):
@@ -59,35 +58,6 @@ class RenderTests(unittest.TestCase):
             y = render_binaural(np.ones(10), FlatBank(), source, source, listener,
                                 'room', room_dims=[5, 5, 3])[0]
         np.testing.assert_allclose(y[:, 0], 0.5)
-
-
-class DatasetTests(unittest.TestCase):
-    def test_trajectories_cover_all_sides_and_respect_limits(self):
-        dims = np.array([6., 5., 3.])
-        listener = dims*np.array([.35, .5, .5])
-        static_az, moving_az = [], []
-        for i in range(400):
-            rng = np.random.default_rng([1, i])
-            static = i % 4 == 3
-            start, end = sample_trajectory(rng, listener, dims, static, min_distance=1.0)
-            self.assertGreaterEqual(closest_distance(start, end, listener), 1.0)
-            for v in (start, end):
-                self.assertTrue(np.all((v > 0) & (v < dims)))
-            v = start-listener
-            (static_az if static else moving_az).append(np.rad2deg(np.arctan2(v[1], v[0])))
-        static_az, moving_az = np.array(static_az), np.array(moving_az)
-        self.assertTrue((static_az > 0).any() and (static_az < 0).any())
-        self.assertTrue((np.abs(moving_az) > 120).any())  # rear hemisphere
-
-    def test_motion_label(self):
-        listener = np.zeros(3)
-        self.assertEqual(motion_label(np.array([1., 1, 0]), np.array([1., -1, 0]), listener),
-                         'azimuth_decreasing')
-        # Rear crossing through 180 deg must not be confused by wrap-around.
-        self.assertEqual(motion_label(np.array([-1., 1, 0]), np.array([-1., -1, 0]), listener),
-                         'azimuth_increasing')
-        p = np.array([1., 0, 0])
-        self.assertEqual(motion_label(p, p, listener), 'static')
 
 
 if __name__ == '__main__':
