@@ -252,13 +252,15 @@ def early_brir(hrirs, source, listener, room, length):
     return out
 
 
-def late_tail(rng, room, fs, onset_s, diffuse_fir=None):
+def late_tail(rng, room, fs, onset_s, diffuse_fir=None, early_energy=0.0):
     """Diffuse late reverberation: independent noise per ear, three-band decay.
 
     diffuse_fir, if given, colours the noise like a diffuse-field HRTF.
 
-    Total energy per ear equals the direct-path energy at Sabine's critical
-    distance r_c = 0.057*sqrt(V/RT60), i.e. direct = reverberant at r_c.
+    All reverberant energy per ear (early reflections + this tail) equals the
+    direct-path energy at Sabine's critical distance r_c = 0.057*sqrt(V/RT60),
+    i.e. direct = reverberant at r_c. early_energy is what the explicit image
+    sources already contribute; the tail supplies the rest (at least 20%).
     """
     dims, rt60 = room['dims'], room['rt60']
     r_c = 0.057*np.sqrt(np.prod(dims)/rt60)
@@ -278,8 +280,16 @@ def late_tail(rng, room, fs, onset_s, diffuse_fir=None):
     if diffuse_fir is not None:
         tail = np.stack([np.convolve(ear, diffuse_fir, mode='same') for ear in tail])
     tail *= fade
-    tail *= np.sqrt((1/r_c)**2/np.mean(np.sum(tail**2, axis=1)))
+    target = max((1/r_c)**2-early_energy, 0.2*(1/r_c)**2)
+    tail *= np.sqrt(target/np.mean(np.sum(tail**2, axis=1)))
     return tail
+
+
+def reflection_energy(source, listener, room):
+    """Per-ear energy of the explicit reflections (HRIRs have unit mean energy)."""
+    points, gains = image_sources(source, room)
+    dist = np.linalg.norm(points[1:]-listener, axis=1)
+    return float(np.sum((gains[1:]/dist)**2))
 
 
 def render_scene(signal, hrirs, traj, listener, room, rng,
@@ -294,7 +304,9 @@ def render_scene(signal, hrirs, traj, listener, room, rng,
                                              for p in points])
     if room['rt60']:
         onset = np.min(np.linalg.norm(positions(traj, listener, np.linspace(0, 1, 64))-listener, axis=1))/C
-        tail = late_tail(rng, room, hrirs.fs, onset, hrirs.diffuse_fir)
+        early = np.mean([reflection_energy(p, listener, room)
+                         for p in positions(traj, listener, np.linspace(0, 1, 5))])
+        tail = late_tail(rng, room, hrirs.fs, onset, hrirs.diffuse_fir, early)
         late = np.stack([fftconvolve(signal, ear) for ear in tail], axis=1)
         total = np.zeros((max(len(audio), len(late)), 2))
         total[:len(audio)] += audio
