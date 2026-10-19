@@ -7,10 +7,14 @@ plus dataset-specific fields. "group" decides the train/validation/test split
   python prepare_sources.py emilia --root EMILIA_DIR --output sources/speech.jsonl
   python prepare_sources.py audiocaps --csv train.csv val.csv test.csv \
       --audio-dir AUDIOCAPS_AUDIO --output sources/sfx.jsonl
+  python prepare_sources.py uniaudio --jsonl 01_emilia_snr_35.jsonl --sample 2000 \
+      --output sources/speech_2k.jsonl
 """
 import argparse
 import csv
+import hashlib
 import json
+import random
 import re
 from pathlib import Path
 
@@ -92,6 +96,70 @@ def audiocaps(args):
     return rows, skipped
 
 
+UNIAUDIO_LINE = re.compile(r'^\[(\w+)\]\s*<[^>]*>\s*(.*)$')
+CJK = re.compile(r'[぀-ヿ㐀-鿿]')
+
+
+def parse_uniaudio(text):
+    """'[global] <0,4> Spoken audio\n[speech] <0,4> Speech; transcript: ...' -> (type, text)."""
+    for line in text.split('\n'):
+        m = UNIAUDIO_LINE.match(line.strip())
+        if not m:
+            continue
+        tag, body = m.groups()
+        if tag == 'speech':
+            return 'speech', body.split('transcript:', 1)[-1].strip()
+        if tag == 'sfx':
+            return 'sfx', body.strip()
+    return None, None
+
+
+def uniaudio_group(path):
+    """Split group from the folder: drop the trailing track/part number so all
+    clips of one album or video (usually one speaker) share a split."""
+    parent = path.parent.name
+    head, _, tail = parent.rpartition('_')
+    return head if head and (tail.isdigit() or re.fullmatch(r'p\d+', tail)) else parent
+
+
+def uniaudio(args):
+    """VoxCPM uniaudio-format JSONL: {"audio", "text": "[global] ...\n[speech|sfx] ...", "duration"}.
+
+    --sample N keeps a uniform random N lines (reservoir sampling) after the
+    duration filter, so a pilot run can draw from millions of lines.
+    """
+    rng = random.Random(args.seed)
+    picked, seen, skipped, multi = [], 0, 0, 0
+    with args.jsonl.open(encoding='utf-8') as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            kind, text = parse_uniaudio(item.get('text', ''))
+            duration = float(item.get('duration', 0) or 0)
+            if kind is None or not text or not args.min_duration <= duration <= args.max_duration:
+                skipped += 1
+                continue
+            if kind == 'sfx' and MULTI_SOURCE.search(text) and not args.keep_multi:
+                multi += 1
+                continue
+            row = {'audio': item['audio'], 'type': kind, 'text': text, 'duration': duration,
+                   'group': uniaudio_group(Path(item['audio'])), 'source_dataset': args.jsonl.stem,
+                   'source_id': hashlib.sha1(item['audio'].encode()).hexdigest()[:16]}
+            if kind == 'speech':
+                row['language'] = 'zh' if CJK.search(text) else 'en'
+            seen += 1
+            if args.sample is None or len(picked) < args.sample:
+                picked.append(row)
+            else:
+                j = rng.randrange(seen)
+                if j < args.sample:
+                    picked[j] = row
+    if multi:
+        print(f'uniaudio: dropped {multi} captions that look multi-source')
+    return picked, skipped
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest='dataset', required=True)
@@ -104,10 +172,17 @@ def main():
     a.add_argument('--csv', type=Path, nargs='+', required=True)
     a.add_argument('--audio-dir', type=Path, required=True)
     a.add_argument('--keep-multi', action='store_true', help='Keep captions that look multi-source')
-    for s in (e, a):
+    u = sub.add_parser('uniaudio')
+    u.add_argument('--jsonl', type=Path, required=True)
+    u.add_argument('--sample', type=int, default=None, help='Keep a random N lines')
+    u.add_argument('--seed', type=int, default=0)
+    u.add_argument('--min-duration', type=float, default=2.0)
+    u.add_argument('--max-duration', type=float, default=30.0)
+    u.add_argument('--keep-multi', action='store_true', help='Keep SFX captions that look multi-source')
+    for s in (e, a, u):
         s.add_argument('--output', type=Path, required=True)
     args = p.parse_args()
-    rows, skipped = (emilia if args.dataset == 'emilia' else audiocaps)(args)
+    rows, skipped = {'emilia': emilia, 'audiocaps': audiocaps, 'uniaudio': uniaudio}[args.dataset](args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('w', encoding='utf-8') as fh:
         for row in rows:

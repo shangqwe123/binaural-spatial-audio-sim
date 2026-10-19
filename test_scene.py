@@ -134,6 +134,15 @@ class CaptionTests(unittest.TestCase):
         self.assertEqual(caps['zh'], '在一个房间里，声音：A dog barks，声音在近处从左前方经右前方绕到右后方。')
         self.assertIn('a dog barks, circling nearby from the front left via the front right', caps['en'])
 
+    def test_uniaudio_parsing(self):
+        from prepare_sources import parse_uniaudio, uniaudio_group
+        speech = '[global] <0.00,4.43> Spoken audio\n[speech] <0.00,4.40> Speech; transcript: 在健身房练习。'
+        self.assertEqual(parse_uniaudio(speech), ('speech', '在健身房练习。'))
+        sfx = '[global] <0.00,10.00> General Audio\n[sfx] <0.00,10.00> A dog barks'
+        self.assertEqual(parse_uniaudio(sfx), ('sfx', 'A dog barks'))
+        self.assertEqual(uniaudio_group(Path('a/xmly00000_68109020_568230303/x_7.mp3')), 'xmly00000_68109020')
+        self.assertEqual(uniaudio_group(Path('a/BiliBili_BV1184y1q7si_p10/x_15.mp3')), 'BiliBili_BV1184y1q7si')
+
     def test_multi_source_filter(self):
         self.assertIsNone(MULTI_SOURCE.search('A dog barks repeatedly'))
         self.assertIsNotNone(MULTI_SOURCE.search('A man speaks while birds chirp'))

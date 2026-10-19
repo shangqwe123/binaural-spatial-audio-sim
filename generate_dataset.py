@@ -1,7 +1,7 @@
 """Spatialize speech / sound-effect sources into labelled binaural scenes.
 
 Input: one or more source manifests from prepare_sources.py (JSONL with audio,
-type, text, group). Output: <output-dir>/<split>/<id>.wav, manifest.jsonl with
+type, text, group). Output: <output-dir>/<split>/<id>.flac (or .wav), manifest.jsonl with
 structured labels and template captions, errors.json.
 
   python generate_dataset.py --sources sources/speech.jsonl sources/sfx.jsonl \
@@ -186,12 +186,12 @@ def process(job):
                 divisor = np.gcd(a['out_sr'], fs)
                 audio = resample_poly(audio, a['out_sr']//divisor, fs//divisor, axis=0)
             split = stable_split(source['group'])
-            out = Path(a['output_dir'])/split/f'{key}.wav'
+            out = Path(a['output_dir'])/split/f"{key}.{a['format']}"
             out.parent.mkdir(parents=True, exist_ok=True)
             sf.write(out, audio, a['out_sr'], subtype='PCM_24')
             spatial = describe(traj, listener, len(signal), fs)
             rows.append({
-                'id': key, 'audio': f'{split}/{key}.wav', 'split': split,
+                'id': key, 'audio': f"{split}/{key}.{a['format']}", 'split': split,
                 'set_id': base, 'variant': variant,  # all variants share the same source audio
                 'plan': plans[variant],  # requested attributes; labels below are what was rendered
                 'sample_rate': a['out_sr'], 'channels': ['left', 'right'],
@@ -228,6 +228,8 @@ def main():
     p.add_argument('--target-dbfs', type=float, default=-30.0,
                    help='Active RMS of the dry source; leaves headroom for near sources in small rooms')
     p.add_argument('--out-sr', type=int, default=48000)
+    p.add_argument('--format', choices=['flac', 'wav'], default='flac',
+                   help='Lossless only (24-bit): lossy codecs can smear interaural time/level cues')
     p.add_argument('--limit', type=int, default=None, help='Use only the first N sources (smoke tests)')
     p.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2)-1))
     p.add_argument('--resume', action='store_true', help='Skip ids already in manifest.jsonl')
