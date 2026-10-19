@@ -27,12 +27,15 @@ DISTANCES = {'near': (1.0, 1.5), 'far': (3.0, 5.0)}
 ROOMS = {
     # dims ranges (x, y, z) in metres. 'room' spans bedroom to living room or
     # classroom; far sources only fit the larger ones (placement retries).
-    'room': {'dims': [(3, 10), (3, 8), (2.5, 3.5)], 'rt60': (0.2, 0.6), 'distances': ['near', 'far']},
+    # Furnished small rooms are dead; RT60 grows with volume (see sample_room).
+    'room': {'dims': [(3, 10), (3, 8), (2.5, 3.5)], 'rt60': (0.2, 0.6), 'distances': ['near', 'far'],
+             'rt60_by_volume': {'volume': (30, 200), 'small': (0.2, 0.35), 'large': (0.35, 0.6)}},
     'hall': {'dims': [(15, 30), (12, 20), (6, 10)], 'rt60': (0.9, 1.6), 'distances': ['near', 'far']},
     'open': {'dims': None, 'rt60': None, 'distances': ['near', 'far']},
 }
 MOTIONS = {'static': 0.4, 'arc': 0.15, 'line': 0.15, 'radial': 0.3}  # used when no plan fixes the motion
 WALL_MARGIN = 0.3
+LISTENER_WALL_MIN = 1.0
 LINE_MIN_FRACTION = 0.75  # closest point of a line vs. its distance band's lower edge
 RADIAL_NEAR, RADIAL_FAR = (1.0, 1.25), (4.0, 5.0)
 MOVE_SECONDS = (2.0, 4.0)  # roughly walking pace; the source holds still before/after
@@ -58,8 +61,15 @@ def sample_room(rng, kind):
     if spec['dims'] is None:
         return {'kind': kind, 'dims': None, 'rt60': None, 'beta': None}
     dims = np.array([rng.uniform(*r) for r in spec['dims']])
-    rt60 = float(rng.uniform(*spec['rt60']))
     volume = float(np.prod(dims))
+    scale = spec.get('rt60_by_volume')
+    if scale:
+        # Interpolate the RT60 range between the small- and large-room ranges by volume.
+        (v0, v1), small, large = scale['volume'], scale['small'], scale['large']
+        f = float(np.clip((volume-v0)/(v1-v0), 0, 1))
+        rt60 = float(rng.uniform(small[0]+f*(large[0]-small[0]), small[1]+f*(large[1]-small[1])))
+    else:
+        rt60 = float(rng.uniform(*spec['rt60']))
     surface = 2*(dims[0]*dims[1]+dims[0]*dims[2]+dims[1]*dims[2])
     alpha = float(np.clip(0.161*volume/(surface*rt60), 0.01, 0.99))  # Sabine
     return {'kind': kind, 'dims': dims, 'rt60': rt60, 'alpha': alpha, 'beta': np.sqrt(1-alpha)}
@@ -157,7 +167,10 @@ def place_listener(rng, room, traj, tries=200):
         return listener if np.all(positions(traj, listener, np.linspace(0, 1, 64))[:, 2] > 0.1) else None
     dims = room['dims']
     for _ in range(tries):
-        listener = np.array([rng.uniform(0.5, dims[0]-0.5), rng.uniform(0.5, dims[1]-0.5),
+        # >= 1 m from side walls: closer, a wall reflection arrives almost with
+        # the direct sound and blurs the direction.
+        m = LISTENER_WALL_MIN
+        listener = np.array([rng.uniform(m, dims[0]-m), rng.uniform(m, dims[1]-m),
                              rng.uniform(1.2, min(1.7, dims[2]-0.5))])
         pts = positions(traj, listener, np.linspace(0, 1, 64))
         if np.all((pts > WALL_MARGIN) & (pts < dims-WALL_MARGIN)):

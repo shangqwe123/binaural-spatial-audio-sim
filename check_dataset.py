@@ -9,10 +9,12 @@
 - Level per room and distance class.
 - Actual shares of scene, motion, distance and sector vs ratios.json.
 
-  python check_dataset.py generated/manifest.jsonl
+  python check_dataset.py generated/manifest.jsonl [workers]
 """
 import json
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from collections import defaultdict
 from pathlib import Path
 
@@ -67,40 +69,54 @@ def report_shares(rows, ratios):
     print(f'  planned distance not placeable (rendered at another distance): {released}/{len(rows)}')
 
 
+def analyse(job):
+    """Per-clip results: ([(key, itd_ok, ild_ok, mismatch or None)], level entry or None)."""
+    base, row = job
+    audio, fs = sf.read(base/row['audio'])
+    room, spatial = row['room']['kind'], row['spatial']
+    # First and last second of activity within the dry span; silence (and
+    # the reverb tail after the source stops) carries no direction.
+    dry = round(row['dry_duration_s']*fs)
+    frame = int(0.02*fs)
+    e = np.mean(audio[:dry//frame*frame].reshape(-1, frame, 2)**2, axis=(1, 2))
+    active = np.flatnonzero(e > e.max()*0.01)*frame  # within 20 dB of the peak
+    results = []
+    if len(active) >= 10:
+        first, last = active[0], active[-1]+frame
+        second = min((last-first)//2, fs)
+        for name, part in (('start', audio[first:first+second]), ('end', audio[last-second:last])):
+            az = spatial[name]['azimuth_deg']
+            if 30 <= abs(az) <= 150 and np.mean(part**2) > 1e-10:
+                itd, ild = itd_s(part, fs), ild_db(part)
+                bad = None if np.sign(itd) == np.sign(az) else (
+                    row['id'], name, round(az), round(itd*1e6), round(ild, 1))
+                results.append(((room, spatial['motion']), np.sign(itd) == np.sign(az),
+                                np.sign(ild) == np.sign(az), bad))
+    level = None
+    if spatial['motion'] == 'static':
+        level = ((room, spatial['start']['distance_class']), 10*np.log10(np.mean(audio**2)+1e-15))
+    return results, level
+
+
 def main():
     manifest = Path(sys.argv[1])
+    workers = int(sys.argv[2]) if len(sys.argv) > 2 else max(1, (os.cpu_count() or 2)-1)
     rows = [json.loads(line) for line in manifest.read_text(encoding='utf-8').splitlines() if line]
     ratios_path = manifest.parent/'ratios.json'
     report_shares(rows, json.loads(ratios_path.read_text(encoding='utf-8')) if ratios_path.exists() else None)
     ok = defaultdict(lambda: [0, 0, 0])  # itd ok, ild ok, total
     levels = defaultdict(list)
     bad = []
-    for row in rows:
-        audio, fs = sf.read(manifest.parent/row['audio'])
-        room, spatial = row['room']['kind'], row['spatial']
-        # First and last second of activity within the dry span; silence (and
-        # the reverb tail after the source stops) carries no direction.
-        dry = round(row['dry_duration_s']*fs)
-        frame = int(0.02*fs)
-        e = np.mean(audio[:dry//frame*frame].reshape(-1, frame, 2)**2, axis=(1, 2))
-        active = np.flatnonzero(e > e.max()*0.01)*frame  # within 20 dB of the peak
-        if len(active) < 10:
-            continue
-        first, last = active[0], active[-1]+frame
-        second = min((last-first)//2, fs)
-        for name, part in (('start', audio[first:first+second]), ('end', audio[last-second:last])):
-            az = spatial[name]['azimuth_deg']
-            if 30 <= abs(az) <= 150 and np.mean(part**2) > 1e-10:
-                key = (room, spatial['motion'])
-                itd, ild = itd_s(part, fs), ild_db(part)
-                ok[key][0] += np.sign(itd) == np.sign(az)
-                ok[key][1] += np.sign(ild) == np.sign(az)
+    with ProcessPoolExecutor(workers) as pool:
+        for results, level in pool.map(analyse, [(manifest.parent, r) for r in rows], chunksize=64):
+            for key, itd_ok, ild_ok, mismatch in results:
+                ok[key][0] += itd_ok
+                ok[key][1] += ild_ok
                 ok[key][2] += 1
-                if np.sign(itd) != np.sign(az):
-                    bad.append((row['id'], name, round(az), round(itd*1e6), round(ild, 1)))
-        if spatial['motion'] == 'static':
-            levels[(room, spatial['start']['distance_class'])].append(
-                10*np.log10(np.mean(audio**2)+1e-15))
+                if mismatch:
+                    bad.append(mismatch)
+            if level:
+                levels[level[0]].append(level[1])
     print('Lateral endpoints pointing to the labelled side:  ITD (GCC-PHAT) | broadband ILD')
     for key in sorted(ok):
         itd_ok, ild_ok, total = ok[key]

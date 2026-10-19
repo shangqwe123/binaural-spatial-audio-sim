@@ -54,6 +54,22 @@ class SceneTests(unittest.TestCase):
         self.assertIn(('room', 'radial'), seen)
         self.assertIn(('hall', 'radial'), seen)
 
+    def test_room_rt60_grows_with_size_and_listener_clear_of_walls(self):
+        small, large = [], []
+        for i in range(400):
+            room = sample_room(np.random.default_rng([5, i]), 'room')
+            volume = float(np.prod(room['dims']))
+            if volume <= 30:
+                small.append(room['rt60'])
+            if volume >= 200:
+                large.append(room['rt60'])
+            traj = {'kind': 'static', 'el': 0, 'az0': 0, 'az1': 0, 'r0': 1.2, 'r1': 1.2}
+            listener = place_listener(np.random.default_rng([6, i]), room, traj)
+            if listener is not None:
+                self.assertTrue(np.all(listener[:2] >= 1.0-1e-9) and np.all(listener[:2] <= room['dims'][:2]-1.0+1e-9))
+        self.assertTrue(small and max(small) <= 0.35+1e-9)
+        self.assertTrue(large and min(large) >= 0.35-1e-9)
+
     def test_image_sources(self):
         room = {'dims': np.array([4., 3., 2.5]), 'beta': 0.8}
         points, gains = image_sources([1., 1., 1.], room, max_order=1)
