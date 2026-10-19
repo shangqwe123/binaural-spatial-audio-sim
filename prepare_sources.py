@@ -154,7 +154,8 @@ def uniaudio(args):
                 continue
             row = {'audio': item['audio'], 'type': kind, 'text': text, 'duration': duration,
                    'group': group, 'source_dataset': args.jsonl.stem,
-                   'source_id': hashlib.sha1(item['audio'].encode()).hexdigest()[:16]}
+                   'source_id': hashlib.sha1(item['audio'].encode()).hexdigest()[:16],
+                   'raw_text': item.get('text', '')}  # kept for the uniaudio output
             if kind == 'speech':
                 row['language'] = 'zh' if CJK.search(text) else 'en'
             seen += 1

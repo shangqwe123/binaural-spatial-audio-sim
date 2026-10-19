@@ -143,6 +143,16 @@ class CaptionTests(unittest.TestCase):
         self.assertEqual(uniaudio_group(Path('a/xmly00000_68109020_568230303/x_7.mp3')), 'xmly00000_68109020')
         self.assertEqual(uniaudio_group(Path('a/BiliBili_BV1184y1q7si_p10/x_15.mp3')), 'BiliBili_BV1184y1q7si')
 
+    def test_uniaudio_text_and_keywords(self):
+        from generate_dataset import uniaudio_text
+        spatial = {'motion': 'static', 'start': {'sector': 'back_left', 'distance_class': 'near'},
+                   'end': {'sector': 'back_left', 'distance_class': 'near'}}
+        source = {'type': 'speech', 'text': 'Hi.',
+                  'raw_text': '[global] <0.00,4.43> Spoken audio\n[speech] <0.00,4.40> Speech; transcript: Hi.'}
+        self.assertEqual(uniaudio_text(source, 'hall', spatial, 5.1, 4.43),
+                         '[global] <0.00,5.10> Spoken audio\n[speech] <0.00,4.40> Speech; transcript: Hi.\n'
+                         '[spatial] <0.00,4.43> hall, back left, near, static')
+
     def test_multi_source_filter(self):
         self.assertIsNone(MULTI_SOURCE.search('A dog barks repeatedly'))
         self.assertIsNotNone(MULTI_SOURCE.search('A man speaks while birds chirp'))

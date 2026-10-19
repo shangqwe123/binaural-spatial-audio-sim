@@ -1,8 +1,10 @@
-"""Template captions from structured spatial labels (zh and en).
+"""Template captions and keyword tags from structured spatial labels.
 
 These are deliberately plain; rewrite them with an LLM later for variety and
 keep the structured labels in the manifest as the ground truth.
 """
+import re
+
 ROOM_ZH = {'room': '在一个房间里', 'hall': '在一个大厅里', 'open': '在空旷的户外'}
 ROOM_EN = {'room': 'In a room', 'hall': 'In a large hall', 'open': 'Outdoors in an open space'}
 SECTOR_ZH = {'front': '正前方', 'front_left': '左前方', 'left': '左侧', 'back_left': '左后方',
@@ -12,6 +14,7 @@ SECTOR_EN = {'front': 'the front', 'front_left': 'the front left', 'left': 'the 
              'right': 'the right', 'front_right': 'the front right'}
 DIST_ZH = {'near': '近处', 'far': '远处'}
 DIST_EN = {'near': 'nearby', 'far': 'far away'}
+KEY_SECTOR = {k: k.replace('_', ' ') for k in SECTOR_EN}  # 'front left'
 
 
 def content(source):
@@ -50,4 +53,27 @@ def make_captions(source, room_kind, spatial):
         else:
             zh = f'{r_zh}，{c_zh}，声音在{d_zh}从{a}移动到{b}。'
             en = f'{r_en}, {c_en}, moving {d_en} from {ae} to {be}.'
+    # A transcript that already ends a sentence must not get a second full stop.
+    zh = re.sub(r'([。！？!?.…])”。$', lambda m: m.group(1)+'”', zh)
+    en = re.sub(r'([.!?…。！？])"\.$', lambda m: m.group(1)+'"', en)
     return {'zh': zh, 'en': en}
+
+
+def spatial_keywords(room_kind, spatial):
+    """Fixed-order keywords: scene, direction, distance, motion.
+
+    'hall, back left, near, static' / 'hall, right, far to near, approaching' /
+    'open, front to back left via front left, far, circling' /
+    'room, left to front, near, passing'
+    """
+    s0, s1, m = spatial['start'], spatial['end'], spatial['motion']
+    if m == 'static':
+        return f"{room_kind}, {KEY_SECTOR[s0['sector']]}, {s0['distance_class']}, static"
+    if m == 'radial':
+        if spatial['radial'] == 'approach':
+            return f"{room_kind}, {KEY_SECTOR[s0['sector']]}, far to near, approaching"
+        return f"{room_kind}, {KEY_SECTOR[s0['sector']]}, near to far, receding"
+    route = f"{KEY_SECTOR[s0['sector']]} to {KEY_SECTOR[s1['sector']]}"
+    if m == 'arc':
+        return f"{room_kind}, {route} via {KEY_SECTOR[spatial['via_sector']]}, {s0['distance_class']}, circling"
+    return f"{room_kind}, {route}, {s0['distance_class']}, passing"

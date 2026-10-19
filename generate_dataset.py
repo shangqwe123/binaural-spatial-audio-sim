@@ -18,7 +18,9 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-from captions import make_captions
+import re
+
+from captions import make_captions, spatial_keywords
 from render import HrirBank
 from scene import (ROOMS, SECTORS, Hrirs, distance_class, path_fraction, place_listener, positions,
                    render_scene, sample_motion, sample_room, sample_timing, sector_of, wrap_deg)
@@ -31,6 +33,23 @@ DEFAULT_RATIOS = {
     'distance': {'near': 0.5, 'far': 0.5},  # static/arc/line only
     'sector': {s: 1/8 for s in SECTORS},
 }
+
+
+def uniaudio_text(source, room_kind, spatial, duration, dry):
+    """VoxCPM uniaudio-format text plus a [spatial] keyword line.
+
+    Keeps the source's own [speech]/[sfx] lines (and their timestamps); the
+    [global] span grows to the rendered length (propagation + reverb tail).
+    """
+    raw = source.get('raw_text')
+    if not raw:
+        tag, label, body = (('speech', 'Spoken audio', f"Speech; transcript: {source['text']}")
+                            if source['type'] == 'speech' else ('sfx', 'General Audio', source['text']))
+        raw = f'[global] <0.00,{dry:.2f}> {label}\n[{tag}] <0.00,{dry:.2f}> {body}'
+    lines = [re.sub(r'^\[global\]\s*<[^>]*>', f'[global] <0.00,{duration:.2f}>', line)
+             for line in raw.split('\n') if line.strip()]
+    lines.append(f'[spatial] <0.00,{dry:.2f}> {spatial_keywords(room_kind, spatial)}')
+    return '\n'.join(lines)
 
 
 def stable_split(group):
@@ -214,6 +233,10 @@ def process(job):
                          'rt60_s': room['rt60'], 'listener_m': listener.round(3).tolist()},
                 'spatial': spatial,
                 'captions': make_captions(source, room['kind'], spatial),
+                'keywords': spatial_keywords(room['kind'], spatial),
+                'uniaudio': {'audio': str(out.resolve()), 'duration': round(len(audio)/a['out_sr'], 3),
+                             'text': uniaudio_text(source, room['kind'], spatial,
+                                                   len(audio)/a['out_sr'], len(signal)/fs)},
                 'render': {'engine': 'scene.py: HRIR image sources (order 2) + diffuse tail',
                            'hrtf_snapshot_count': int(len(nodes)), 'source_dbfs': a['target_dbfs'],
                            'clip_gain': clip_gain, 'seed': seed},
@@ -290,17 +313,23 @@ def main():
             jobs.append({'source': source, 'base': base, 'variants': variants, 'args': shared})
     print(f'{len(sources)} sources, {len(jobs)} to render, {len(done)} clips already done', flush=True)
     made, errors = 0, []
+    # Training-ready lists in the VoxCPM uniaudio format, one per split.
+    uni = {split: (a.output_dir/f'uniaudio_{split}.jsonl').open('a' if a.resume else 'w', encoding='utf-8')
+           for split in ('train', 'validation', 'test')}
     with manifest_path.open('a' if a.resume else 'w', encoding='utf-8') as manifest, \
             ProcessPoolExecutor(a.workers, initializer=init_worker, initargs=(str(a.sofa),)) as pool:
         for i, (rows, error) in enumerate(pool.map(process, jobs, chunksize=4)):
             for row in rows:
                 manifest.write(json.dumps(row, ensure_ascii=False)+'\n')
+                uni[row['split']].write(json.dumps(row['uniaudio'], ensure_ascii=False)+'\n')
             made += len(rows)
             if error:
                 errors.append(error)
             if (i+1) % 50 == 0 or i+1 == len(jobs):
                 manifest.flush()
                 print(f'[{i+1}/{len(jobs)}] {made} clips, {len(errors)} errors', flush=True)
+    for fh in uni.values():
+        fh.close()
     (a.output_dir/'errors.json').write_text(json.dumps(errors, indent=2, ensure_ascii=False), encoding='utf-8')
     print(f'Done: {made} clips; {len(errors)} source errors; manifest={manifest_path}')
 
