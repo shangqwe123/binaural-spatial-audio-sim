@@ -234,9 +234,11 @@ def process(job):
                 'spatial': spatial,
                 'captions': make_captions(source, room['kind'], spatial),
                 'keywords': spatial_keywords(room['kind'], spatial),
+                # 'layout' tells VoxCPM's loader to keep both channels (per-row layout)
                 'uniaudio': {'audio': str(out.resolve()), 'duration': round(len(audio)/a['out_sr'], 3),
                              'text': uniaudio_text(source, room['kind'], spatial,
-                                                   len(audio)/a['out_sr'], len(signal)/fs)},
+                                                   len(audio)/a['out_sr'], len(signal)/fs),
+                             'layout': 'binaural'},
                 'render': {'engine': 'scene.py: HRIR image sources (order 2) + diffuse tail',
                            'hrtf_snapshot_count': int(len(nodes)), 'source_dbfs': a['target_dbfs'],
                            'clip_gain': clip_gain, 'seed': seed},
