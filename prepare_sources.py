@@ -21,6 +21,12 @@ from pathlib import Path
 AUDIO_SUFFIXES = {'.wav', '.flac', '.mp3', '.ogg'}
 # Rough single-source filter for captions; BEWO-1M filtered similarly before a
 # CLAP check. Anything joined by these words likely has two or more events.
+def stable_split(group):
+    # Same rule as generate_dataset.stable_split: one group, one split.
+    bucket = int(hashlib.sha256(group.encode()).hexdigest()[:8], 16) % 100
+    return 'train' if bucket < 80 else ('validation' if bucket < 90 else 'test')
+
+
 MULTI_SOURCE = re.compile(
     r'\b(and|while|as|then|followed by|before|after|with|along with|over|'
     r'in the background|together|alternat\w*|interspersed|accompanied)\b', re.I)
@@ -143,8 +149,11 @@ def uniaudio(args):
             if kind == 'sfx' and MULTI_SOURCE.search(text) and not args.keep_multi:
                 multi += 1
                 continue
+            group = uniaudio_group(Path(item['audio']))
+            if args.only_split and stable_split(group) != args.only_split:
+                continue
             row = {'audio': item['audio'], 'type': kind, 'text': text, 'duration': duration,
-                   'group': uniaudio_group(Path(item['audio'])), 'source_dataset': args.jsonl.stem,
+                   'group': group, 'source_dataset': args.jsonl.stem,
                    'source_id': hashlib.sha1(item['audio'].encode()).hexdigest()[:16]}
             if kind == 'speech':
                 row['language'] = 'zh' if CJK.search(text) else 'en'
@@ -179,6 +188,8 @@ def main():
     u.add_argument('--min-duration', type=float, default=2.0)
     u.add_argument('--max-duration', type=float, default=30.0)
     u.add_argument('--keep-multi', action='store_true', help='Keep SFX captions that look multi-source')
+    u.add_argument('--only-split', choices=['train', 'validation', 'test'], default=None,
+                   help='Keep groups that generate_dataset.py assigns to this split (e.g. test sets)')
     for s in (e, a, u):
         s.add_argument('--output', type=Path, required=True)
     args = p.parse_args()

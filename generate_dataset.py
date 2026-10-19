@@ -136,6 +136,16 @@ def plan_variants(rng, n, ratios=DEFAULT_RATIOS):
              'distance': None if radial[i] else next(fixed)} for i in range(n)]
 
 
+def static_grid(ratios):
+    """Every static combination (scene x distance x sector): 48 with the defaults.
+
+    Meant for test sets: one sentence in all combinations makes per-direction
+    and per-scene errors easy to spot and to listen to.
+    """
+    return [{'room': scene, 'sector': sector, 'motion': 'static', 'approach': None, 'distance': dist}
+            for scene in ratios['scene'] for dist in ratios['distance'] for sector in SECTORS]
+
+
 def sample_scene(rng, source, plan):
     """Room, trajectory and listener for one planned variant.
 
@@ -170,8 +180,8 @@ def process(job):
             raise ValueError(f'only {active:.2f}s active audio')
         rows = []
         # The plan depends only on the source, so --resume reproduces it.
-        plans = plan_variants(np.random.default_rng([a['seed'], int(base, 16)]), a['variants'],
-                              a['ratios'])
+        plans = static_grid(a['ratios']) if a['static_grid'] else plan_variants(
+            np.random.default_rng([a['seed'], int(base, 16)]), a['variants'], a['ratios'])
         for variant in job['variants']:
             key = f'{base}_v{variant:02d}'
             seed = [a['seed'], int(base, 16), variant]
@@ -220,6 +230,9 @@ def main():
     p.add_argument('--sofa', type=Path, default=Path(__file__).parent/'data/hrtf_nh2.sofa')
     p.add_argument('--variants', type=int, default=8,
                    help='Parallel spatial versions per source clip (same audio, different scenes)')
+    p.add_argument('--static-grid', action='store_true',
+                   help='Render every static scene x distance x sector combination per source '
+                        '(48 with default ratios; for test sets); overrides --variants')
     p.add_argument('--ratios', type=Path, default=None,
                    help='JSON overriding DEFAULT_RATIOS, e.g. {"scene": {"room": 0.5, "hall": 0.2, "open": 0.3}}')
     p.add_argument('--seed', type=int, default=20261017)
@@ -247,6 +260,8 @@ def main():
                 p.error(f'ratios for {group} must be non-negative with a positive sum')
             ratios[group] = {k: float(shares.get(k, 0)) for k in ratios[group]}
     a.ratios = {g: {k: v for k, v in shares.items() if v > 0} for g, shares in ratios.items()}
+    if a.static_grid:
+        a.variants = len(static_grid(a.ratios))
     sources = []
     for manifest in a.sources:
         for line in manifest.read_text(encoding='utf-8').splitlines():
