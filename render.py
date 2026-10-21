@@ -68,21 +68,27 @@ class HrirBank:
         spectrum = np.fft.rfft(self.ir, n=self.nfft, axis=-1)
         self.aligned = spectrum * np.exp(
             2j*np.pi*self.delays[..., None]*self.freq)
+        self.magnitude = np.abs(self.aligned)
 
-    def at(self, direction, neighbors=48):
-        # Local spherical kernel avoids scanning/blending the entire SOFA grid.
-        # Peak alignment avoids mixing differently delayed HRIR peaks.
+    def at(self, direction, neighbors=12, sigma_deg=3.0):
+        # Local spherical kernel (ARI grid spacing is ~5 deg) blends a few
+        # measured neighbours. Magnitude and phase are blended separately:
+        # averaging complex spectra cancels high frequencies, whose residual
+        # phase differs between neighbours (that cost ~7 dB at 6-10 kHz and
+        # ~14 dB at 10-16 kHz with the old 48-neighbour, 7.5-deg kernel).
         direction = direction / np.linalg.norm(direction)
         distances, indices = self.direction_tree.query(direction, k=min(neighbors, len(self.directions)))
         distances = np.atleast_1d(distances)
         indices = np.atleast_1d(indices)
         angles = 2*np.arcsin(np.clip(distances/2, 0, 1))
-        exponent = -0.5*(angles/np.deg2rad(7.5))**2
+        exponent = -0.5*(angles/np.deg2rad(sigma_deg))**2
         weights = np.exp(exponent-exponent.max())
         weights /= weights.sum()
         delays = weights @ self.delays[indices]
-        spectrum = np.einsum('m,mcf->cf', weights, self.aligned[indices], optimize=False)
-        spectrum *= np.exp(-2j*np.pi*delays[:, None]*self.freq)
+        magnitude = np.einsum('m,mcf->cf', weights, self.magnitude[indices], optimize=False)
+        blended = np.einsum('m,mcf->cf', weights, self.aligned[indices], optimize=False)
+        phase = blended/np.maximum(np.abs(blended), 1e-12)
+        spectrum = magnitude*phase*np.exp(-2j*np.pi*delays[:, None]*self.freq)
         return np.fft.irfft(spectrum, n=self.nfft, axis=-1)[:, :2*self.ir.shape[-1]]
 
 
